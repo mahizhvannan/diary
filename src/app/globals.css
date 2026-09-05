@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-paper-2: var(--paper-2);
+  --color-ink: var(--ink);
+  --color-ink-mute: var(--ink-mute);
+  --color-accent: var(--accent);
+  --font-sans: var(--font-source-sans);
+  --font-serif: var(--font-source-serif);
+}
+
+:root {
+  --paper: #f7f4ef;
+  --paper-2: #efe8dc;
+  --ink: #1c1917;
+  --ink-mute: #78716c;
+  --accent: #3f4a3c;
+}
+
+html.dark {
+  --paper: #1c1a17;
+  --paper-2: #161410;
+  --ink: #ece7df;
+  --ink-mute: #a39b90;
+  --accent: #c4b8a4;
+}
+
+html,
+body {
+  background: var(--paper);
+  color: var(--ink);
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+button {
+  cursor: pointer;
+}
+
+input[type="date"] {
+  color-scheme: inherit;
+}
