@@ -15,6 +15,32 @@ const STORE_KEY = "diary.driveToken";
 const OAUTH_CLIENT_ID =
   "896798852345-s0nnos28spu1jaiud4mb59bkq8bmvbql.apps.googleusercontent.com";
 
+/** Personal diary: only these Google accounts may connect. Comma-separated via env. */
+const ALLOWED_GOOGLE_EMAILS = (
+  process.env.NEXT_PUBLIC_ALLOWED_GOOGLE_EMAIL || "mavannan95@gmail.com"
+)
+  .split(",")
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean);
+
+export function isAllowedGoogleEmail(email: string | null | undefined): boolean {
+  if (!email) return false;
+  return ALLOWED_GOOGLE_EMAILS.includes(email.trim().toLowerCase());
+}
+
+async function rejectUnauthorizedEmail(email: string | null | undefined): Promise<never> {
+  clearDriveAuth();
+  try {
+    await signOut(auth);
+  } catch {
+    /* ignore */
+  }
+  throw new Error(
+    `This diary is private to ${ALLOWED_GOOGLE_EMAILS.join(", ")}. ` +
+      `Signed in as ${email || "unknown"} — pick that Google account, or cancel.`,
+  );
+}
+
 const app = getApps()[0] ?? initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 void setPersistence(auth, browserLocalPersistence);
@@ -87,6 +113,8 @@ export async function tokenHasDrive(accessToken: string): Promise<boolean> {
 function driveProvider(forceConsent: boolean) {
   const provider = new GoogleAuthProvider();
   provider.addScope(DRIVE_SCOPE);
+  provider.addScope("email");
+  provider.addScope("profile");
   if (forceConsent) {
     provider.setCustomParameters({ prompt: "consent" });
   }
@@ -95,9 +123,17 @@ function driveProvider(forceConsent: boolean) {
 
 async function accessTokenFromPopup(forceConsent: boolean) {
   const provider = driveProvider(forceConsent);
+  // Prefer the owner account in the Google account picker when possible.
+  provider.setCustomParameters({
+    ...(forceConsent ? { prompt: "consent" } : {}),
+    login_hint: ALLOWED_GOOGLE_EMAILS[0] || "",
+  });
   const result = auth.currentUser
     ? await reauthenticateWithPopup(auth.currentUser, provider)
     : await signInWithPopup(auth, provider);
+  if (!isAllowedGoogleEmail(result.user.email)) {
+    await rejectUnauthorizedEmail(result.user.email);
+  }
   const credential = GoogleAuthProvider.credentialFromResult(result);
   if (!credential?.accessToken) {
     throw new Error("Google did not return a Drive access token. Try Connect again.");
@@ -149,17 +185,37 @@ export async function trySilentDriveToken(): Promise<string | null> {
 }
 
 export async function restoreDriveToken(): Promise<string | null> {
+  await auth.authStateReady();
+  if (auth.currentUser && !isAllowedGoogleEmail(auth.currentUser.email)) {
+    clearDriveAuth();
+    try {
+      await signOut(auth);
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+
   const stored = readStoredDriveToken();
   if (stored && Date.now() < stored.expiresAt - 30_000) {
     if (await tokenHasDrive(stored.accessToken)) return stored.accessToken;
     clearStoredDriveToken();
   }
-  await auth.authStateReady();
   if (!auth.currentUser && !localStorage.getItem("diary.driveGranted")) {
     return null;
   }
   const silent = await trySilentDriveToken();
   if (silent && (await tokenHasDrive(silent))) {
+    // Silent token refresh: still require Firebase user to be the allowlisted owner.
+    if (auth.currentUser && !isAllowedGoogleEmail(auth.currentUser.email)) {
+      clearDriveAuth();
+      try {
+        await signOut(auth);
+      } catch {
+        /* ignore */
+      }
+      return null;
+    }
     await persistDriveToken(silent);
     return silent;
   }

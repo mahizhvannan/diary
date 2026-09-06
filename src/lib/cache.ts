@@ -1,4 +1,14 @@
-import type { CalorieDay, DayFile, Manifest, MonthSummaryFile, PeriodQaFile } from "./types";
+import type {
+  ArtifactFile,
+  ArtifactsIndex,
+  CalorieDay,
+  CollectionsFile,
+  CustomSkillsFile,
+  DayFile,
+  Manifest,
+  MonthSummaryFile,
+  PeriodQaFile,
+} from "./types";
 
 const DB = "diary-cache";
 const STORE = "kv";
@@ -110,16 +120,26 @@ export async function loadAllCachedCalories(): Promise<Record<string, CalorieDay
   return out;
 }
 
-export type PendingSync = { days: string[]; calories: string[] };
+export type PendingSync = {
+  days: string[];
+  calories: string[];
+  collections: boolean;
+};
 
 export async function loadPendingSync(): Promise<PendingSync> {
-  return (await idbGet<PendingSync>("pendingSync")) ?? { days: [], calories: [] };
+  const loaded = (await idbGet<Partial<PendingSync>>("pendingSync")) ?? {};
+  return {
+    days: loaded.days ?? [],
+    calories: loaded.calories ?? [],
+    collections: Boolean(loaded.collections),
+  };
 }
 
 export async function savePendingSync(pending: PendingSync): Promise<void> {
   await idbSet("pendingSync", {
     days: [...new Set(pending.days)],
     calories: [...new Set(pending.calories)],
+    collections: Boolean(pending.collections),
   });
 }
 
@@ -135,12 +155,39 @@ export async function clearPending(kind: "days" | "calories", date: string): Pro
   await savePendingSync(pending);
 }
 
+export async function markCollectionsPending(): Promise<void> {
+  const pending = await loadPendingSync();
+  pending.collections = true;
+  await savePendingSync(pending);
+}
+
+export async function clearCollectionsPending(): Promise<void> {
+  const pending = await loadPendingSync();
+  pending.collections = false;
+  await savePendingSync(pending);
+}
+
+export async function hasPendingSync(): Promise<boolean> {
+  const pending = await loadPendingSync();
+  return pending.days.length > 0 || pending.calories.length > 0 || pending.collections;
+}
+
 export async function loadCachedMonthSummary(month: string): Promise<MonthSummaryFile | null> {
   return (await idbGet<MonthSummaryFile>(`month:${month}`)) ?? null;
 }
 
 export async function saveCachedMonthSummary(file: MonthSummaryFile): Promise<void> {
   await idbSet(`month:${file.month}`, file);
+}
+
+export async function deleteCachedMonthSummary(month: string): Promise<void> {
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).delete(`month:${month}`);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
 export async function loadAllCachedMonthSummaries(): Promise<Record<string, MonthSummaryFile>> {
@@ -160,6 +207,48 @@ export async function loadCachedPeriodQa(): Promise<PeriodQaFile> {
 
 export async function saveCachedPeriodQa(file: PeriodQaFile): Promise<void> {
   await idbSet("periodQa", file);
+}
+
+export async function loadCachedCollections(): Promise<CollectionsFile> {
+  return (await idbGet<CollectionsFile>("collections")) ?? { collections: [] };
+}
+
+export async function saveCachedCollections(file: CollectionsFile): Promise<void> {
+  await idbSet("collections", file);
+}
+
+export async function loadCachedCustomSkills(): Promise<CustomSkillsFile> {
+  return (await idbGet<CustomSkillsFile>("customSkills")) ?? { skills: [] };
+}
+
+export async function saveCachedCustomSkills(file: CustomSkillsFile): Promise<void> {
+  await idbSet("customSkills", file);
+}
+
+export async function loadCachedArtifactsIndex(): Promise<ArtifactsIndex> {
+  return (await idbGet<ArtifactsIndex>("artifactsIndex")) ?? { items: [] };
+}
+
+export async function saveCachedArtifactsIndex(index: ArtifactsIndex): Promise<void> {
+  await idbSet("artifactsIndex", index);
+}
+
+export async function loadCachedArtifact(id: string): Promise<ArtifactFile | null> {
+  return (await idbGet<ArtifactFile>(`artifact:${id}`)) ?? null;
+}
+
+export async function saveCachedArtifact(file: ArtifactFile): Promise<void> {
+  await idbSet(`artifact:${file.id}`, file);
+}
+
+export async function deleteCachedArtifact(id: string): Promise<void> {
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).delete(`artifact:${id}`);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
 export async function loadCachedDaysForDates(dates: string[]): Promise<Record<string, DayFile>> {

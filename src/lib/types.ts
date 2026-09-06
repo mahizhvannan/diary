@@ -86,12 +86,68 @@ export type PeriodQaEntry = {
   question: string;
   startLogId: string;
   endLogId: string;
+  packedHash?: string;
   reply: string;
   at: string;
 };
 
 export type PeriodQaFile = {
   answers: PeriodQaEntry[];
+};
+
+export type TrackSample = {
+  date: string;
+  value: number;
+  at: string;
+  note?: string;
+  source?: "chat" | "ui";
+};
+
+export type TrackStatic = {
+  id: string;
+  name: string;
+  value: string;
+  description: string;
+};
+
+export type TrackVariable = {
+  id: string;
+  name: string;
+  description: string;
+  unit: string;
+  samples: TrackSample[];
+};
+
+export type TrackCollection = {
+  id: string;
+  name: string;
+  statics: TrackStatic[];
+  variables: TrackVariable[];
+};
+
+export type CollectionsFile = {
+  collections: TrackCollection[];
+};
+
+export type CollectionsMetaFile = {
+  collections: {
+    id: string;
+    name: string;
+    statics: TrackStatic[];
+    variables: Omit<TrackVariable, "samples">[];
+  }[];
+};
+
+export type TrackMonthFile = {
+  month: string;
+  samples: {
+    variableId: string;
+    date: string;
+    value: number;
+    at: string;
+    note?: string;
+    source?: "chat" | "ui";
+  }[];
 };
 
 export type Manifest = {
@@ -102,6 +158,65 @@ export type Manifest = {
   recentSessions?: RecentSession[];
   monthSummaries?: { month: string; fileId: string }[];
   periodQaFileId?: string;
+  collectionsFileId?: string;
+  trackMonths?: { month: string; fileId: string }[];
+  monthFolders?: { month: string; folderId: string }[];
+  customSkillsFileId?: string;
+  artifactsFileId?: string;
+  artifactFiles?: { id: string; fileId: string }[];
+};
+
+export type CustomSkill = {
+  id: string;
+  tag: string;
+  hint: string;
+  intent: string;
+  instructions: string;
+  uses: {
+    nutrition: boolean;
+    collections: boolean;
+    diary: boolean;
+    range: "none" | "day" | "week" | "month";
+  };
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CustomSkillsFile = {
+  skills: CustomSkill[];
+};
+
+export type ArtifactKind = "html" | "svg" | "md" | "json" | "png" | "csv" | "text" | "other";
+
+export type ArtifactFile = {
+  id: string;
+  title: string;
+  kind: ArtifactKind;
+  mimeType: string;
+  content: string;
+  encoding: "utf8" | "base64";
+  sourcePath?: string;
+  createdAt: string;
+  note?: string;
+};
+
+export type ArtifactsIndex = {
+  items: {
+    id: string;
+    title: string;
+    kind: ArtifactKind;
+    mimeType: string;
+    createdAt: string;
+    fileId: string;
+    note?: string;
+  }[];
+};
+
+export type Skill = {
+  id: string;
+  tag: string;
+  hint: string;
+  custom?: boolean;
 };
 
 export type GeminiNutritionResult = {

@@ -1,4 +1,4 @@
-import type { ChatAttachment, DiaryEntry } from "../lib/types";
+import type { ChatAttachment, CustomSkill, DiaryEntry } from "../lib/types";
 import { formatStamp } from "../lib/dates";
 import { matchingSkills, mentionQuery } from "../lib/skills";
 import { useEffect, useRef, useState } from "react";
@@ -11,6 +11,7 @@ type Props = {
   draft: string;
   pending: ChatAttachment[];
   compact?: boolean;
+  customSkills?: CustomSkill[];
   onDraft: (v: string) => void;
   onPending: (files: ChatAttachment[]) => void;
   onAddFiles: (files: FileList | File[]) => void;
@@ -26,6 +27,7 @@ export function ChatPane({
   draft,
   pending,
   compact,
+  customSkills = [],
   onDraft,
   onPending,
   onAddFiles,
@@ -39,13 +41,13 @@ export function ChatPane({
   const [cursor, setCursor] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const mention = mentionQuery(draft, cursor);
-  const skills = mention ? matchingSkills(mention.query) : [];
+  const skills = mention ? matchingSkills(mention.query, customSkills) : [];
   const showMenu = menuOpen && skills.length > 0;
 
   useEffect(() => {
-    if (mention && matchingSkills(mention.query).length > 0) setMenuOpen(true);
+    if (mention && matchingSkills(mention.query, customSkills).length > 0) setMenuOpen(true);
     else setMenuOpen(false);
-  }, [mention?.query, mention?.start, draft]);
+  }, [mention?.query, mention?.start, draft, customSkills]);
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -88,7 +90,7 @@ export function ChatPane({
       <div className={`min-h-0 flex-1 overflow-y-auto ${compact ? "px-4 py-4" : "px-5 py-6"}`}>
         {entry.messages.length === 0 ? (
           <p className="max-w-xl font-serif text-lg leading-relaxed text-ink-mute">
-            Talk first. Try @calories for food or activity. Attach a photo of a meal if you like.
+            Talk first. Try @calories for food, @track for weight and other variables, or attach a meal photo.
             Nothing is filed in the diary until you press Log.
           </p>
         ) : (
@@ -200,7 +202,7 @@ export function ChatPane({
             }}
             onSelect={(e) => setCursor(e.currentTarget.selectionStart)}
             rows={compact ? 2 : 3}
-            placeholder="Chat, photo, @calories, @weekly, or @monthly"
+            placeholder="Chat, photo, @calories, @track, @weekly, or @monthly"
             className="w-full resize-y border border-ink/20 bg-paper px-3 py-2 font-serif text-base leading-6 text-ink outline-none focus:border-accent"
             onKeyDown={(e) => {
               if (e.key === "Escape") {

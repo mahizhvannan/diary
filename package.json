@@ -9,11 +9,15 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@cursor/sdk": "^1.0.31",
     "firebase": "^12.18.0",
+    "jszip": "^3.10.1",
     "minisearch": "^7.2.0",
     "next": "15.5.25",
     "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

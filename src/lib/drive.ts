@@ -1,5 +1,19 @@
-import type { CalorieDay, DayFile, Manifest, MonthSummaryFile, PeriodQaFile, RecentSession } from "./types";
+import type {
+  ArtifactFile,
+  ArtifactsIndex,
+  CalorieDay,
+  CollectionsFile,
+  CollectionsMetaFile,
+  CustomSkillsFile,
+  DayFile,
+  Manifest,
+  MonthSummaryFile,
+  PeriodQaFile,
+  RecentSession,
+  TrackMonthFile,
+} from "./types";
 import { DEFAULT_CALORIE_GOAL } from "./nutrition";
+import { collectionsToMeta, splitTrackMonths, mergeTrackMonths } from "./track";
 
 const DRIVE = "https://www.googleapis.com/drive/v3";
 const UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -15,6 +29,12 @@ function normalizeManifest(loaded: Manifest, folderId: string): Manifest {
     recentSessions: loaded.recentSessions ?? [],
     monthSummaries: loaded.monthSummaries ?? [],
     periodQaFileId: loaded.periodQaFileId,
+    collectionsFileId: loaded.collectionsFileId,
+    trackMonths: loaded.trackMonths ?? [],
+    monthFolders: loaded.monthFolders ?? [],
+    customSkillsFileId: loaded.customSkillsFileId,
+    artifactsFileId: loaded.artifactsFileId,
+    artifactFiles: loaded.artifactFiles ?? [],
   };
 }
 
@@ -74,15 +94,17 @@ async function findFile(
   return data.files[0] ?? null;
 }
 
-async function createFolder(token: string): Promise<string> {
+async function createFolder(token: string, name: string, parentId?: string): Promise<string> {
+  const body: Record<string, unknown> = {
+    name,
+    mimeType: "application/vnd.google-apps.folder",
+    appProperties: { diary: "1" },
+  };
+  if (parentId) body.parents = [parentId];
   const file = await driveJson<DriveFile>(token, `${DRIVE}/files`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      name: FOLDER_NAME,
-      mimeType: "application/vnd.google-apps.folder",
-      appProperties: { diary: "1" },
-    }),
+    body: JSON.stringify(body),
   });
   return file.id;
 }
@@ -149,7 +171,7 @@ export async function ensureDiaryStore(token: string): Promise<Manifest> {
     token,
     `name='${FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
   );
-  const folderId = folder?.id ?? (await createFolder(token));
+  const folderId = folder?.id ?? (await createFolder(token, FOLDER_NAME));
 
   const manifestFile = await findFile(
     token,
@@ -190,6 +212,23 @@ export async function saveManifest(token: string, manifest: Manifest): Promise<v
   });
 }
 
+async function ensureMonthFolder(
+  token: string,
+  manifest: Manifest,
+  month: string,
+): Promise<{ folderId: string; manifest: Manifest }> {
+  const hit = (manifest.monthFolders ?? []).find((m) => m.month === month);
+  if (hit) return { folderId: hit.folderId, manifest };
+
+  const found = await findFile(
+    token,
+    `name='${month}' and mimeType='application/vnd.google-apps.folder' and '${manifest.folderId}' in parents and trashed=false`,
+  );
+  const folderId = found?.id ?? (await createFolder(token, month, manifest.folderId));
+  const monthFolders = [...(manifest.monthFolders ?? []).filter((m) => m.month !== month), { month, folderId }];
+  return { folderId, manifest: { ...manifest, monthFolders } };
+}
+
 function dayFileName(date: string): string {
   return `day-${date}.json`;
 }
@@ -210,17 +249,23 @@ export async function saveDayFile(
   day: DayFile,
 ): Promise<Manifest> {
   const existing = manifest.days.find((d) => d.date === day.date);
+  const month = day.date.slice(0, 7);
+  let nextManifest = manifest;
+  let parentId = manifest.folderId;
+  if (!existing) {
+    const folder = await ensureMonthFolder(token, nextManifest, month);
+    nextManifest = folder.manifest;
+    parentId = folder.folderId;
+  }
   const fileId = await uploadJson({
     token,
     name: dayFileName(day.date),
-    parentId: manifest.folderId,
+    parentId,
     fileId: existing?.fileId,
     body: day,
   });
 
-  const tags = Array.from(
-    new Set(day.entries.flatMap((e) => e.tags)),
-  );
+  const tags = Array.from(new Set(day.entries.flatMap((e) => e.tags)));
   const row = {
     date: day.date,
     fileId,
@@ -230,13 +275,13 @@ export async function saveDayFile(
   };
 
   const days = existing
-    ? manifest.days.map((d) => (d.date === day.date ? row : d))
-    : [...manifest.days, row].sort((a, b) => b.date.localeCompare(a.date));
+    ? nextManifest.days.map((d) => (d.date === day.date ? row : d))
+    : [...nextManifest.days, row].sort((a, b) => b.date.localeCompare(a.date));
 
   const next = {
-    ...manifest,
+    ...nextManifest,
     days,
-    recentSessions: mergeRecent(manifest.recentSessions, day),
+    recentSessions: mergeRecent(nextManifest.recentSessions, day),
   };
   await saveManifest(token, next);
   return next;
@@ -280,18 +325,26 @@ export async function saveCalorieFile(
   day: CalorieDay,
 ): Promise<Manifest> {
   const existing = (manifest.calorieDays ?? []).find((d) => d.date === day.date);
+  const month = day.date.slice(0, 7);
+  let nextManifest = manifest;
+  let parentId = manifest.folderId;
+  if (!existing) {
+    const folder = await ensureMonthFolder(token, nextManifest, month);
+    nextManifest = folder.manifest;
+    parentId = folder.folderId;
+  }
   const fileId = await uploadJson({
     token,
     name: calorieFileName(day.date),
-    parentId: manifest.folderId,
+    parentId,
     fileId: existing?.fileId,
     body: day,
   });
   const row = { date: day.date, fileId };
   const calorieDays = existing
-    ? (manifest.calorieDays ?? []).map((d) => (d.date === day.date ? row : d))
-    : [...(manifest.calorieDays ?? []), row].sort((a, b) => b.date.localeCompare(a.date));
-  const next = { ...manifest, calorieDays };
+    ? (nextManifest.calorieDays ?? []).map((d) => (d.date === day.date ? row : d))
+    : [...(nextManifest.calorieDays ?? []), row].sort((a, b) => b.date.localeCompare(a.date));
+  const next = { ...nextManifest, calorieDays };
   await saveManifest(token, next);
   return next;
 }
@@ -349,6 +402,23 @@ export async function saveMonthSummary(
   return next;
 }
 
+export async function deleteMonthSummary(
+  token: string,
+  manifest: Manifest,
+  month: string,
+): Promise<Manifest> {
+  const row = (manifest.monthSummaries ?? []).find((d) => d.month === month);
+  if (row) {
+    await trashFile(token, row.fileId);
+  }
+  const next = {
+    ...manifest,
+    monthSummaries: (manifest.monthSummaries ?? []).filter((d) => d.month !== month),
+  };
+  await saveManifest(token, next);
+  return next;
+}
+
 const PERIOD_QA_NAME = "period-qa.json";
 
 export async function loadPeriodQa(
@@ -380,4 +450,244 @@ export async function savePeriodQa(
   const next = { ...manifest, periodQaFileId: fileId };
   await saveManifest(token, next);
   return next;
+}
+
+const COLLECTIONS_META_NAME = "collections-meta.json";
+
+function trackMonthFileName(month: string): string {
+  return `track-${month}.json`;
+}
+
+export async function loadCollections(
+  token: string,
+  manifest: Manifest,
+): Promise<CollectionsFile> {
+  let meta: CollectionsMetaFile | CollectionsFile | null = null;
+  if (manifest.collectionsFileId) {
+    try {
+      meta = await downloadJson<CollectionsMetaFile | CollectionsFile>(
+        token,
+        manifest.collectionsFileId,
+      );
+    } catch {
+      meta = null;
+    }
+  }
+  if (!meta) return { collections: [] };
+
+  // Legacy single-file shape already includes samples.
+  const legacyHasSamples = (meta.collections ?? []).some((c) =>
+    (c.variables ?? []).some((v) => Array.isArray((v as { samples?: unknown }).samples)),
+  );
+  if (legacyHasSamples) {
+    return { collections: (meta as CollectionsFile).collections ?? [] };
+  }
+
+  const months: TrackMonthFile[] = [];
+  for (const row of manifest.trackMonths ?? []) {
+    try {
+      months.push(await downloadJson<TrackMonthFile>(token, row.fileId));
+    } catch {
+      // skip missing month shard
+    }
+  }
+  return mergeTrackMonths(meta as CollectionsMetaFile, months);
+}
+
+export async function saveCollections(
+  token: string,
+  manifest: Manifest,
+  body: CollectionsFile,
+): Promise<Manifest> {
+  let next = manifest;
+  const meta = collectionsToMeta(body);
+  const metaFileId = await uploadJson({
+    token,
+    name: COLLECTIONS_META_NAME,
+    parentId: next.folderId,
+    fileId: next.collectionsFileId,
+    body: meta,
+  });
+  next = { ...next, collectionsFileId: metaFileId };
+
+  const shards = splitTrackMonths(body);
+  const touched = new Set(shards.map((s) => s.month));
+  // Also rewrite empty months that used to have data? Keep prior months listed in manifest
+  // and overwrite shards we have; leave untouched months as-is unless variables deleted.
+  const trackMonths = [...(next.trackMonths ?? [])];
+
+  for (const shard of shards) {
+    const folder = await ensureMonthFolder(token, next, shard.month);
+    next = folder.manifest;
+    const existing = trackMonths.find((t) => t.month === shard.month);
+    const fileId = await uploadJson({
+      token,
+      name: trackMonthFileName(shard.month),
+      parentId: folder.folderId,
+      fileId: existing?.fileId,
+      body: shard,
+    });
+    if (existing) {
+      existing.fileId = fileId;
+    } else {
+      trackMonths.push({ month: shard.month, fileId });
+    }
+  }
+
+  // Drop months with no remaining samples so Drive stays tidy.
+  next = {
+    ...next,
+    trackMonths: trackMonths
+      .filter((t) => touched.has(t.month))
+      .sort((a, b) => b.month.localeCompare(a.month)),
+  };
+  await saveManifest(token, next);
+  return next;
+}
+
+const CUSTOM_SKILLS_NAME = "custom-skills.json";
+
+export async function loadCustomSkills(
+  token: string,
+  manifest: Manifest,
+): Promise<CustomSkillsFile> {
+  if (manifest.customSkillsFileId) {
+    try {
+      const loaded = await downloadJson<CustomSkillsFile>(token, manifest.customSkillsFileId);
+      return { skills: loaded.skills ?? [] };
+    } catch {
+      return { skills: [] };
+    }
+  }
+  return { skills: [] };
+}
+
+export async function saveCustomSkills(
+  token: string,
+  manifest: Manifest,
+  body: CustomSkillsFile,
+): Promise<Manifest> {
+  const fileId = await uploadJson({
+    token,
+    name: CUSTOM_SKILLS_NAME,
+    parentId: manifest.folderId,
+    fileId: manifest.customSkillsFileId,
+    body,
+  });
+  const next = { ...manifest, customSkillsFileId: fileId };
+  await saveManifest(token, next);
+  return next;
+}
+
+const ARTIFACTS_INDEX_NAME = "artifacts-index.json";
+
+function artifactFileName(id: string): string {
+  return `artifact-${id}.json`;
+}
+
+export async function loadArtifactsIndex(
+  token: string,
+  manifest: Manifest,
+): Promise<ArtifactsIndex> {
+  if (manifest.artifactsFileId) {
+    try {
+      const loaded = await downloadJson<ArtifactsIndex>(token, manifest.artifactsFileId);
+      return { items: loaded.items ?? [] };
+    } catch {
+      return { items: [] };
+    }
+  }
+  return { items: [] };
+}
+
+export async function loadArtifactFile(
+  token: string,
+  manifest: Manifest,
+  id: string,
+): Promise<ArtifactFile | null> {
+  const row = (manifest.artifactFiles ?? []).find((a) => a.id === id);
+  if (!row) return null;
+  try {
+    return await downloadJson<ArtifactFile>(token, row.fileId);
+  } catch {
+    return null;
+  }
+}
+
+export async function saveArtifact(
+  token: string,
+  manifest: Manifest,
+  artifact: ArtifactFile,
+  index: ArtifactsIndex,
+): Promise<{ manifest: Manifest; index: ArtifactsIndex }> {
+  const existingFile = (manifest.artifactFiles ?? []).find((a) => a.id === artifact.id);
+  const fileId = await uploadJson({
+    token,
+    name: artifactFileName(artifact.id),
+    parentId: manifest.folderId,
+    fileId: existingFile?.fileId,
+    body: artifact,
+  });
+
+  const nextItems = [
+    {
+      id: artifact.id,
+      title: artifact.title,
+      kind: artifact.kind,
+      mimeType: artifact.mimeType,
+      createdAt: artifact.createdAt,
+      fileId,
+      note: artifact.note,
+    },
+    ...index.items.filter((i) => i.id !== artifact.id),
+  ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+  const nextIndex: ArtifactsIndex = { items: nextItems };
+  const indexFileId = await uploadJson({
+    token,
+    name: ARTIFACTS_INDEX_NAME,
+    parentId: manifest.folderId,
+    fileId: manifest.artifactsFileId,
+    body: nextIndex,
+  });
+
+  const artifactFiles = [
+    { id: artifact.id, fileId },
+    ...(manifest.artifactFiles ?? []).filter((a) => a.id !== artifact.id),
+  ];
+
+  const nextManifest: Manifest = {
+    ...manifest,
+    artifactsFileId: indexFileId,
+    artifactFiles,
+  };
+  await saveManifest(token, nextManifest);
+  return { manifest: nextManifest, index: nextIndex };
+}
+
+export async function deleteArtifact(
+  token: string,
+  manifest: Manifest,
+  id: string,
+  index: ArtifactsIndex,
+): Promise<{ manifest: Manifest; index: ArtifactsIndex }> {
+  const row = (manifest.artifactFiles ?? []).find((a) => a.id === id);
+  if (row) await trashFile(token, row.fileId);
+
+  const nextIndex: ArtifactsIndex = { items: index.items.filter((i) => i.id !== id) };
+  const indexFileId = await uploadJson({
+    token,
+    name: ARTIFACTS_INDEX_NAME,
+    parentId: manifest.folderId,
+    fileId: manifest.artifactsFileId,
+    body: nextIndex,
+  });
+
+  const nextManifest: Manifest = {
+    ...manifest,
+    artifactsFileId: indexFileId,
+    artifactFiles: (manifest.artifactFiles ?? []).filter((a) => a.id !== id),
+  };
+  await saveManifest(token, nextManifest);
+  return { manifest: nextManifest, index: nextIndex };
 }

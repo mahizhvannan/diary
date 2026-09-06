@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { isoDate, monthLabel, shiftMonth } from "../lib/dates";
 import { nutritionHeadline } from "../lib/nutrition";
 import { monthKey } from "../lib/period";
@@ -8,11 +8,14 @@ import type { CalorieDay, DayFile, MonthSummaryFile } from "../lib/types";
 
 type Props = {
   markedDates: Set<string>;
+  days: Record<string, DayFile>;
+  calories: Record<string, CalorieDay>;
   onOpenDay: (date: string) => void;
   selected?: {
     date: string;
     day: DayFile | null;
     calories: CalorieDay | null;
+    tracked: { name: string; unit: string; value: number }[];
   } | null;
   onCloseDay: () => void;
   onDeleteSession: (date: string, entryId: string) => void;
@@ -22,10 +25,28 @@ type Props = {
   monthSummaries: Record<string, MonthSummaryFile>;
   generatingMonth: boolean;
   onGenerateMonth: (year: number, month: number) => void;
+  onDeleteMonthSummary: (year: number, month: number) => void;
+  onNeedMonthSummary: (year: number, month: number) => void;
 };
+
+function monthHasRealLogs(
+  key: string,
+  days: Record<string, DayFile>,
+  calories: Record<string, CalorieDay>,
+): boolean {
+  for (const [date, day] of Object.entries(days)) {
+    if (date.startsWith(`${key}-`) && day.entries.length > 0) return true;
+  }
+  for (const [date, day] of Object.entries(calories)) {
+    if (date.startsWith(`${key}-`) && day.items.length > 0) return true;
+  }
+  return false;
+}
 
 export function CalendarLog({
   markedDates,
+  days,
+  calories,
   onOpenDay,
   selected,
   onCloseDay,
@@ -36,6 +57,8 @@ export function CalendarLog({
   monthSummaries,
   generatingMonth,
   onGenerateMonth,
+  onDeleteMonthSummary,
+  onNeedMonthSummary,
 }: Props) {
   const now = new Date();
   const [{ year, month }, setMonth] = useState({
@@ -53,15 +76,25 @@ export function CalendarLog({
   const diaryCount = selected?.day?.entries.length ?? 0;
   const calCount = selected?.calories?.items.length ?? 0;
   const key = monthKey(year, month);
-  const hasMonthData = [...markedDates].some((d) => d.startsWith(`${key}-`));
+  const hasMonthData = monthHasRealLogs(key, days, calories);
   const monthSummary = monthSummaries[key];
+  const showMonthBlock =
+    hasMonthData ||
+    Boolean(monthSummary) ||
+    [...markedDates].some((d) => d.startsWith(`${key}-`));
+  const staleSummary = Boolean(monthSummary) && !hasMonthData;
+
+  useEffect(() => {
+    onNeedMonthSummary(year, month);
+  }, [year, month, onNeedMonthSummary]);
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <header className="border-b border-ink/15 px-6 py-4">
         <h1 className="font-serif text-2xl">Logs</h1>
         <p className="mt-1 text-sm text-ink-mute">
-          One month at a time. Scroll or use arrows. Circled days have diary or calorie logs.
+          One month at a time. Scroll or use arrows. Circled days have diary, calorie, or tracked
+          logs.
         </p>
       </header>
       <div
@@ -113,20 +146,44 @@ export function CalendarLog({
             );
           })}
         </div>
-        {hasMonthData ? (
+        {showMonthBlock ? (
           <div className="mt-8 border-t border-ink/10 pt-5">
-            <button
-              type="button"
-              disabled={generatingMonth}
-              onClick={() => onGenerateMonth(year, month)}
-              className="border border-ink bg-ink px-3 py-1.5 text-sm text-paper disabled:opacity-40"
-            >
-              {generatingMonth ? "Working…" : "Generate monthly summary"}
-            </button>
-            {monthSummary ? (
-              <p className="mt-4 font-serif text-[16px] leading-7">
-                {monthSummary.summary}
+            {staleSummary ? (
+              <p className="mb-3 text-sm text-ink-mute">
+                Stale summary — no diary or calorie logs left in this month.
               </p>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              {hasMonthData ? (
+                <button
+                  type="button"
+                  disabled={generatingMonth}
+                  onClick={() => onGenerateMonth(year, month)}
+                  className="border border-ink bg-ink px-3 py-1.5 text-sm text-paper disabled:opacity-40"
+                >
+                  {generatingMonth
+                    ? "Working…"
+                    : monthSummary
+                      ? "Regenerate monthly summary"
+                      : "Generate monthly summary"}
+                </button>
+              ) : null}
+              {monthSummary ? (
+                <button
+                  type="button"
+                  className="border border-ink/40 px-3 py-1.5 text-sm text-ink"
+                  onClick={() => {
+                    if (confirm(`Delete the monthly summary for ${monthLabel(year, month)}?`)) {
+                      onDeleteMonthSummary(year, month);
+                    }
+                  }}
+                >
+                  Delete monthly summary
+                </button>
+              ) : null}
+            </div>
+            {monthSummary ? (
+              <p className="mt-4 font-serif text-[16px] leading-7">{monthSummary.summary}</p>
             ) : null}
           </div>
         ) : null}
@@ -175,7 +232,9 @@ export function CalendarLog({
                   <li key={e.id} className="flex items-start justify-between gap-3">
                     <div>
                       <p className="font-serif text-base">{e.title}</p>
-                      <p className="mt-1 text-sm leading-6 text-ink-mute">{e.summary || "No summary."}</p>
+                      <p className="mt-1 text-sm leading-6 text-ink-mute">
+                        {e.summary || "No summary."}
+                      </p>
                     </div>
                     <button
                       type="button"
@@ -197,7 +256,8 @@ export function CalendarLog({
                 selected.calories!.items.map((item) => (
                   <li key={item.id} className="flex items-start justify-between gap-3 text-sm">
                     <span>
-                      {item.kind === "activity" ? "Activity" : "Food"} · {item.name} · {item.calories} kcal
+                      {item.kind === "activity" ? "Activity" : "Food"} · {item.name} ·{" "}
+                      {item.calories} kcal
                     </span>
                     <button
                       type="button"
@@ -206,6 +266,20 @@ export function CalendarLog({
                     >
                       Delete
                     </button>
+                  </li>
+                ))
+              )}
+            </ul>
+
+            <h4 className="mt-6 text-xs tracking-[0.14em] text-ink-mute uppercase">Tracked</h4>
+            <ul className="mt-2 flex flex-col gap-2">
+              {(selected.tracked ?? []).length === 0 ? (
+                <li className="text-sm text-ink-mute">No collection variables this day.</li>
+              ) : (
+                selected.tracked.map((row) => (
+                  <li key={row.name} className="text-sm">
+                    {row.name}
+                    {row.unit ? ` (${row.unit})` : ""} · {row.value}
                   </li>
                 ))
               )}

@@ -1,14 +1,55 @@
-export type Skill = {
-  id: string;
-  tag: string;
-  hint: string;
-};
+import type { CustomSkill, CustomSkillsFile } from "./types";
+import type { Skill } from "./types";
 
-export const SKILLS: Skill[] = [
+export type { Skill };
+
+export const BUILTIN_SKILLS: Skill[] = [
   { id: "calories", tag: "@calories", hint: "Log food or activity with a nutrition estimate" },
-  { id: "weekly", tag: "@weekly", hint: "Ask about this week’s diary and calories" },
-  { id: "monthly", tag: "@monthly", hint: "Ask about this month’s diary and calories" },
+  { id: "weekly", tag: "@weekly", hint: "Ask about this week’s diary, calories, and macros" },
+  { id: "monthly", tag: "@monthly", hint: "Ask about this month’s diary, calories, and macros" },
+  { id: "track", tag: "@track", hint: "Update collection variables (weight, sleep, …)" },
+  { id: "cursor", tag: "@cursor", hint: "Analyze with Cursor agent (Analyze tab for now)" },
 ];
+
+/** @deprecated use BUILTIN_SKILLS — kept for older imports */
+export const SKILLS = BUILTIN_SKILLS;
+
+export function normalizeSkillTag(raw: string): string {
+  const t = raw.trim().toLowerCase().replace(/^@+/, "").replace(/[^a-z0-9_]/g, "");
+  return t ? `@${t}` : "";
+}
+
+export function reservedSkillTags(custom: CustomSkill[] = []): Set<string> {
+  return new Set([
+    ...BUILTIN_SKILLS.map((s) => s.tag.toLowerCase()),
+    ...custom.map((s) => s.tag.toLowerCase()),
+  ]);
+}
+
+export function skillTagConflict(
+  tag: string,
+  custom: CustomSkill[],
+  exceptId?: string,
+): string | null {
+  const normalized = normalizeSkillTag(tag);
+  if (!normalized || normalized.length < 2) return "Trigger must be like @myskill";
+  if (normalized.length > 32) return "Trigger is too long";
+  for (const s of BUILTIN_SKILLS) {
+    if (s.tag.toLowerCase() === normalized) return `${normalized} is a built-in skill`;
+  }
+  for (const s of custom) {
+    if (exceptId && s.id === exceptId) continue;
+    if (s.tag.toLowerCase() === normalized) return `${normalized} is already used`;
+  }
+  return null;
+}
+
+export function allSkillsForMention(custom: CustomSkill[]): Skill[] {
+  return [
+    ...BUILTIN_SKILLS,
+    ...custom.map((s) => ({ id: s.id, tag: s.tag, hint: s.hint, custom: true as const })),
+  ];
+}
 
 export function mentionQuery(text: string, cursor: number): { start: number; query: string } | null {
   const before = text.slice(0, cursor);
@@ -20,9 +61,11 @@ export function mentionQuery(text: string, cursor: number): { start: number; que
   return { start: at, query: query.toLowerCase() };
 }
 
-export function matchingSkills(query: string): Skill[] {
+export function matchingSkills(query: string, custom: CustomSkill[] = []): Skill[] {
   const q = query.replace(/^@/, "");
-  return SKILLS.filter((s) => s.tag.slice(1).startsWith(q) || s.tag.startsWith(query));
+  return allSkillsForMention(custom).filter(
+    (s) => s.tag.slice(1).startsWith(q) || s.tag.startsWith(query),
+  );
 }
 
 export function extractCaloriesNote(text: string): string | null {
@@ -51,4 +94,33 @@ export function extractPeriodAsk(
     return { skill: "monthly", question: monthly[1].replace(/^[:\s,-]+/, "").trim() || text };
   }
   return null;
+}
+
+export function extractTrackNote(text: string): string | null {
+  const match = text.match(/@track\b([\s\S]*)/i);
+  if (!match) return null;
+  const note = match[1].replace(/^[:\s,-]+/, "").trim();
+  return note || text.replace(/@track\b/gi, "").trim() || null;
+}
+
+export function extractCustomSkill(
+  text: string,
+  custom: CustomSkill[],
+): { skill: CustomSkill; note: string } | null {
+  if (custom.length === 0) return null;
+  // Longest tag first so @foo_bar beats @foo
+  const sorted = [...custom].sort((a, b) => b.tag.length - a.tag.length);
+  for (const skill of sorted) {
+    const name = skill.tag.replace(/^@/, "");
+    const re = new RegExp(`@${name}\\b([\\s\\S]*)`, "i");
+    const match = text.match(re);
+    if (!match) continue;
+    const note = match[1].replace(/^[:\s,-]+/, "").trim();
+    return { skill, note: note || text.replace(re, "").trim() || "" };
+  }
+  return null;
+}
+
+export function emptyCustomSkills(): CustomSkillsFile {
+  return { skills: [] };
 }

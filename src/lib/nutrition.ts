@@ -42,6 +42,24 @@ export function dayCalorieTotals(day: CalorieDay | null | undefined): {
   return { eaten, burned, net: eaten - burned };
 }
 
+export function dayMacroTotals(day: CalorieDay | null | undefined): {
+  protein: number;
+  carbs: number;
+  fat: number;
+} {
+  if (!day) return { protein: 0, carbs: 0, fat: 0 };
+  return day.items
+    .filter((i) => i.kind === "food")
+    .reduce(
+      (s, i) => ({
+        protein: s.protein + (Number(i.protein) || 0),
+        carbs: s.carbs + (Number(i.carbs) || 0),
+        fat: s.fat + (Number(i.fat) || 0),
+      }),
+      { protein: 0, carbs: 0, fat: 0 },
+    );
+}
+
 export function formatNutritionReply(items: CalorieItem[], reply: string): string {
   const lines = items.map((i) => {
     if (i.kind === "activity") {

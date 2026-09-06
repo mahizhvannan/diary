@@ -1,44 +1,67 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AnalyzeView } from "../components/AnalyzeView";
 import { CalendarLog } from "../components/CalendarLog";
 import { ChatPane } from "../components/ChatPane";
-import { ExportView } from "../components/ExportView";
 import { IconRail, SettingsPanel } from "../components/IconRail";
 import { SessionList } from "../components/SessionList";
 import {
   clearPending,
+  deleteCachedArtifact,
   deleteCachedCalorieDay,
   deleteCachedDay,
+  deleteCachedMonthSummary,
   loadAllCachedCalories,
   loadAllCachedDays,
   loadAllCachedMonthSummaries,
+  loadCachedArtifact,
+  loadCachedArtifactsIndex,
   loadCachedCalorieDay,
   loadCachedDay,
   loadCachedManifest,
   loadCachedMonthSummary,
   loadCachedPeriodQa,
+  loadCachedCollections,
+  loadCachedCustomSkills,
   loadPendingSync,
   markPending,
+  markCollectionsPending,
+  clearCollectionsPending,
+  hasPendingSync,
+  saveCachedArtifact,
+  saveCachedArtifactsIndex,
   saveCachedCalorieDay,
   saveCachedDay,
   saveCachedManifest,
   saveCachedMonthSummary,
   saveCachedPeriodQa,
+  saveCachedCollections,
+  saveCachedCustomSkills,
 } from "../lib/cache";
 import { TIMEZONE, todayIsoDate } from "../lib/dates";
 import {
+  deleteArtifact,
   deleteCalorieFile,
   deleteDayFile,
+  deleteMonthSummary,
   ensureDiaryStore,
+  loadArtifactFile,
+  loadArtifactsIndex,
   loadCalorieFile,
   loadDayFile,
   loadMonthSummary,
   loadPeriodQa,
+  loadCollections,
+  loadCustomSkills,
+  saveArtifact,
   saveCalorieFile,
   saveDayFile,
   saveMonthSummary,
   savePeriodQa,
+  saveCollections,
+  saveCustomSkills,
+  saveManifest,
 } from "../lib/drive";
 import { callGemini, emptyDay } from "../lib/gemini-client";
 import { dataUrlToImage, fileToAttachment } from "../lib/images";
@@ -49,27 +72,43 @@ import {
   formatNutritionReply,
 } from "../lib/nutrition";
 import { packDaysForLlm, searchSummaryDates } from "../lib/search";
-import { parseCalorieLogDate, addDaysIso } from "../lib/parse-date";
+import { parseCalorieLogDate } from "../lib/parse-date";
 import {
   collectLogBounds,
   datesInRange,
   monthKey,
   monthRange,
   packPeriod,
+  packedHash,
   normalizeQuestion,
   weekRange,
 } from "../lib/period";
-import { extractCaloriesNote, extractPeriodAsk } from "../lib/skills";
+import {
+  applyTrackUpdates,
+  looksLikeTrackUpdate,
+  packExportCatalog,
+  packTrackCatalog,
+  samplesOnDate,
+  trackDates,
+} from "../lib/track";
+import { extractCaloriesNote, extractCustomSkill, extractPeriodAsk, extractTrackNote } from "../lib/skills";
 import type {
+  ArtifactFile,
+  ArtifactsIndex,
   CalorieDay,
   ChatAttachment,
   ChatMessage,
+  CollectionsFile,
+  CustomSkillsFile,
   DayFile,
   DiaryEntry,
   Manifest,
   MonthSummaryFile,
   PeriodQaFile,
 } from "../lib/types";
+import type { DiarySnapshot } from "../lib/analyze-types";
+import { collectionTrackables, nutritionTrackables } from "../lib/trackables";
+import { buildDiaryExportZip, downloadBlob } from "../lib/export-zip";
 import { useGoogleDriveToken } from "../lib/use-google-drive";
 import { useTheme } from "../lib/theme";
 
@@ -145,7 +184,7 @@ export function DiaryApp() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
-  const [tab, setTab] = useState<"chat" | "log" | "export">("chat");
+  const [tab, setTab] = useState<"chat" | "log" | "analyze">("chat");
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [phonePreview, setPhonePreview] = useState(true);
   const [narrow, setNarrow] = useState(false);
@@ -153,7 +192,11 @@ export function DiaryApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [monthSummaries, setMonthSummaries] = useState<Record<string, MonthSummaryFile>>({});
   const [periodQa, setPeriodQa] = useState<PeriodQaFile>({ answers: [] });
+  const [collections, setCollections] = useState<CollectionsFile>({ collections: [] });
+  const [customSkills, setCustomSkills] = useState<CustomSkillsFile>({ skills: [] });
+  const [artifactsIndex, setArtifactsIndex] = useState<ArtifactsIndex>({ items: [] });
   const [generatingMonth, setGeneratingMonth] = useState(false);
+  const [drivePending, setDrivePending] = useState(false);
 
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 767px)");
@@ -192,6 +235,12 @@ export function DiaryApp() {
       if (!cancelled) setMonthSummaries(months);
       const qa = await loadCachedPeriodQa();
       if (!cancelled) setPeriodQa(qa);
+      const cols = await loadCachedCollections();
+      if (!cancelled) setCollections(cols);
+      const skills = await loadCachedCustomSkills();
+      if (!cancelled) setCustomSkills(skills);
+      const arts = await loadCachedArtifactsIndex();
+      if (!cancelled) setArtifactsIndex(arts);
     })();
     return () => {
       cancelled = true;
@@ -229,7 +278,15 @@ export function DiaryApp() {
             await clearPending("calories", date);
           }
         }
-        const latest = (await loadCachedManifest()) ?? store;
+        let colManifest = (await loadCachedManifest()) ?? calManifest;
+        if ((await loadPendingSync()).collections) {
+          const localCols = await loadCachedCollections();
+          colManifest = await saveCollections(token, colManifest, localCols);
+          if (!cancelled) setManifest(colManifest);
+          await saveCachedManifest(colManifest);
+          await clearCollectionsPending();
+        }
+        const latest = (await loadCachedManifest()) ?? colManifest;
         for (const row of latest.days) {
           const cached = await loadCachedDay(row.date);
           if (cached) continue;
@@ -263,6 +320,15 @@ export function DiaryApp() {
         const qa = await loadPeriodQa(token, latest);
         await saveCachedPeriodQa(qa);
         if (!cancelled) setPeriodQa(qa);
+        const cols = await loadCollections(token, latest);
+        await saveCachedCollections(cols);
+        if (!cancelled) setCollections(cols);
+        const skills = await loadCustomSkills(token, latest);
+        await saveCachedCustomSkills(skills);
+        if (!cancelled) setCustomSkills(skills);
+        const arts = await loadArtifactsIndex(token, latest);
+        await saveCachedArtifactsIndex(arts);
+        if (!cancelled) setArtifactsIndex(arts);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : "Drive load failed");
       } finally {
@@ -290,8 +356,9 @@ export function DiaryApp() {
     for (const d of manifest?.calorieDays ?? []) s.add(d.date);
     for (const d of Object.keys(days)) s.add(d);
     for (const d of Object.keys(calories)) s.add(d);
+    for (const d of trackDates(collections)) s.add(d);
     return s;
-  }, [manifest, days, calories]);
+  }, [manifest, days, calories, collections]);
 
   const getDay = useCallback(
     (date: string): DayFile => days[date] ?? emptyDay(date, TIMEZONE),
@@ -503,6 +570,164 @@ export function DiaryApp() {
     await saveCachedManifest(saved);
   };
 
+  const flushPendingSync = useCallback(async () => {
+    if (!token) return;
+    const pending = await loadPendingSync();
+    if (!pending.days.length && !pending.calories.length && !pending.collections) {
+      setDrivePending(false);
+      return;
+    }
+    setDrivePending(true);
+    try {
+      let m = (await loadCachedManifest()) ?? manifest;
+      if (!m) return;
+
+      for (const date of pending.days) {
+        const local = await loadCachedDay(date);
+        if (!local) {
+          await clearPending("days", date);
+          continue;
+        }
+        m = await saveDayFile(token, m, local);
+        await saveCachedManifest(m);
+        setManifest(m);
+        await clearPending("days", date);
+      }
+
+      for (const date of (await loadPendingSync()).calories) {
+        const local = await loadCachedCalorieDay(date);
+        if (!local) {
+          await clearPending("calories", date);
+          continue;
+        }
+        m = await saveCalorieFile(token, m, local);
+        await saveCachedManifest(m);
+        setManifest(m);
+        await clearPending("calories", date);
+      }
+
+      if ((await loadPendingSync()).collections) {
+        const cols = await loadCachedCollections();
+        m = await saveCollections(token, m, cols);
+        await saveCachedManifest(m);
+        setManifest(m);
+        await clearCollectionsPending();
+      }
+
+      setDrivePending(await hasPendingSync());
+    } catch {
+      setDrivePending(true);
+    }
+  }, [token, manifest]);
+
+  useEffect(() => {
+    if (!token) return;
+    void flushPendingSync();
+    const id = window.setInterval(() => {
+      void flushPendingSync();
+    }, 20000);
+    return () => window.clearInterval(id);
+  }, [token, flushPendingSync]);
+
+  const persistCollections = async (next: CollectionsFile) => {
+    // Optimistic: UI + IndexedDB first, Drive in background with retry.
+    setCollections(next);
+    await saveCachedCollections(next);
+    await markCollectionsPending();
+    setDrivePending(true);
+    void flushPendingSync();
+  };
+
+  const persistCustomSkills = async (next: CustomSkillsFile) => {
+    setCustomSkills(next);
+    await saveCachedCustomSkills(next);
+    if (!token || !manifest) return;
+    const saved = await saveCustomSkills(token, manifest, next);
+    setManifest(saved);
+    await saveCachedManifest(saved);
+  };
+
+  const buildAnalyzeSnapshot = async (): Promise<DiarySnapshot> => {
+    const [allDays, allCals, allMonths, cols, skills, qa, man] = await Promise.all([
+      loadAllCachedDays(),
+      loadAllCachedCalories(),
+      loadAllCachedMonthSummaries(),
+      loadCachedCollections(),
+      loadCachedCustomSkills(),
+      loadCachedPeriodQa(),
+      loadCachedManifest(),
+    ]);
+    return {
+      days: allDays,
+      calories: allCals,
+      monthSummaries: allMonths,
+      collections: cols,
+      customSkills: skills,
+      periodQa: qa,
+      manifest: man
+        ? {
+            calorieGoal: man.calorieGoal,
+            dayCount: man.days?.length ?? 0,
+            calorieDayCount: man.calorieDays?.length ?? 0,
+          }
+        : undefined,
+    };
+  };
+
+  const onLogArtifacts = async (files: ArtifactFile[]) => {
+    if (!token || !manifest) throw new Error("Connect Google Drive to log artifacts.");
+    let nextManifest = manifest;
+    let nextIndex = artifactsIndex;
+    for (const file of files) {
+      await saveCachedArtifact(file);
+      const saved = await saveArtifact(token, nextManifest, file, nextIndex);
+      nextManifest = saved.manifest;
+      nextIndex = saved.index;
+    }
+    setManifest(nextManifest);
+    await saveCachedManifest(nextManifest);
+    setArtifactsIndex(nextIndex);
+    await saveCachedArtifactsIndex(nextIndex);
+  };
+
+  const onDeleteArtifact = async (id: string) => {
+    if (!token || !manifest) return;
+    const { manifest: nextManifest, index } = await deleteArtifact(
+      token,
+      manifest,
+      id,
+      artifactsIndex,
+    );
+    await deleteCachedArtifact(id);
+    setManifest(nextManifest);
+    await saveCachedManifest(nextManifest);
+    setArtifactsIndex(index);
+    await saveCachedArtifactsIndex(index);
+  };
+
+  const onOpenArtifact = async (id: string): Promise<ArtifactFile | null> => {
+    const cached = await loadCachedArtifact(id);
+    if (cached) return cached;
+    if (!token || !manifest) return null;
+    const file = await loadArtifactFile(token, manifest, id);
+    if (file) await saveCachedArtifact(file);
+    return file;
+  };
+
+  const onDownloadData = async () => {
+    const blob = await buildDiaryExportZip();
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadBlob(blob, `diary-export-${stamp}.zip`);
+  };
+
+  const onCalorieGoalChange = async (goal: number) => {
+    if (!manifest) return;
+    const next = { ...manifest, calorieGoal: goal };
+    setManifest(next);
+    await saveCachedManifest(next);
+    if (token) await saveManifest(token, next);
+  };
+
   const loadRangeData = async (start: string, end: string) => {
     const dayFiles: DayFile[] = [];
     const calDays: CalorieDay[] = [];
@@ -515,6 +740,50 @@ export function DiaryApp() {
     return { dayFiles, calDays };
   };
 
+  const onNeedMonthSummary = useCallback(
+    async (year: number, monthIndex: number) => {
+      const key = monthKey(year, monthIndex);
+      if (monthSummaries[key]) return;
+      const cached = await loadCachedMonthSummary(key);
+      if (cached) {
+        setMonthSummaries((prev) => ({ ...prev, [key]: cached }));
+        return;
+      }
+      if (!token || !manifest) return;
+      if (!(manifest.monthSummaries ?? []).some((m) => m.month === key)) return;
+      try {
+        const remote = await loadMonthSummary(token, manifest, key);
+        if (remote) {
+          setMonthSummaries((prev) => ({ ...prev, [key]: remote }));
+          await saveCachedMonthSummary(remote);
+        }
+      } catch {
+        /* ignore */
+      }
+    },
+    [monthSummaries, token, manifest],
+  );
+
+  const onDeleteMonthSummary = async (year: number, monthIndex: number) => {
+    const key = monthKey(year, monthIndex);
+    setError(null);
+    try {
+      if (token && manifest) {
+        const next = await deleteMonthSummary(token, manifest, key);
+        setManifest(next);
+        await saveCachedManifest(next);
+      }
+      await deleteCachedMonthSummary(key);
+      setMonthSummaries((prev) => {
+        const copy = { ...prev };
+        delete copy[key];
+        return copy;
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not delete month summary");
+    }
+  };
+
   const onGenerateMonth = async (year: number, monthIndex: number) => {
     const key = monthKey(year, monthIndex);
     const { start, end } = monthRange(`${key}-01`);
@@ -523,7 +792,7 @@ export function DiaryApp() {
     try {
       const { dayFiles, calDays } = await loadRangeData(start, end);
       if (dayFiles.length === 0 && calDays.length === 0) return;
-      const packed = packPeriod(dayFiles, calDays);
+      const packed = packPeriod(dayFiles, calDays, collections, { start, end });
       const result = await callGemini({ mode: "range_summary", start, end, packed });
       if (!result.ok) {
         setError(result.message);
@@ -626,9 +895,9 @@ export function DiaryApp() {
         const ask = extractPeriodAsk(text)!;
         const range = ask.skill === "weekly" ? weekRange() : monthRange();
         const { dayFiles, calDays } = await loadRangeData(range.start, range.end);
-        const bounds = collectLogBounds(dayFiles, calDays);
+        const bounds = collectLogBounds(dayFiles, calDays, collections, range);
         if (!bounds.startLogId) {
-          assistantText = `No ${ask.skill} diary or nutrition logs in range ${range.start} to ${range.end}.`;
+          assistantText = `No ${ask.skill} diary, nutrition, or tracked logs in range ${range.start} to ${range.end}.`;
           setCurrent({
             ...working,
             messages: [
@@ -647,12 +916,15 @@ export function DiaryApp() {
           return;
         }
         const question = normalizeQuestion(ask.question) || ask.question;
+        const packed = packPeriod(dayFiles, calDays, collections, range);
+        const hash = packedHash(packed);
         const hit = periodQa.answers.find(
           (a) =>
             a.skill === ask.skill &&
             a.question === question &&
             a.startLogId === bounds.startLogId &&
-            a.endLogId === bounds.endLogId,
+            a.endLogId === bounds.endLogId &&
+            a.packedHash === hash,
         );
         if (hit) {
           assistantText = hit.reply;
@@ -674,7 +946,6 @@ export function DiaryApp() {
           });
           return;
         }
-        const packed = packPeriod(dayFiles, calDays);
         const result = await callGemini({
           mode: "period_ask",
           skill: ask.skill,
@@ -693,6 +964,7 @@ export function DiaryApp() {
             question,
             startLogId: bounds.startLogId,
             endLogId: bounds.endLogId,
+            packedHash: hash,
             reply: assistantText,
             at: new Date().toISOString(),
           };
@@ -723,6 +995,82 @@ export function DiaryApp() {
           updatedAt: new Date().toISOString(),
         });
         return;
+      } else if (extractTrackNote(text) || looksLikeTrackUpdate(text, collections)) {
+        const note = extractTrackNote(text) || text;
+        if (collections.collections.length === 0) {
+          assistantText =
+            "Add a collection with variables first (Collections in the rail), then send values like “weight is 72” or @track.";
+        } else {
+          const result = await callGemini({
+            mode: "track_update",
+            note,
+            today: todayIsoDate(),
+            catalog: packTrackCatalog(collections),
+          });
+          if (!result.ok) {
+            assistantText = result.message;
+            if (result.quota) setError(result.message);
+          } else if (result.mode === "track_update") {
+            const hinted = /\b(yesterday|today|tonight|last night|days ago|\d{4}-\d{2}-\d{2})\b/i.test(
+              note,
+            );
+            const fallbackDate = hinted ? parseCalorieLogDate(note) : todayIsoDate();
+            const updates = result.data.updates.map((u) => ({
+              ...u,
+              source: "chat" as const,
+              logDate:
+                u.logDate && /^\d{4}-\d{2}-\d{2}$/.test(u.logDate) ? u.logDate : fallbackDate,
+            }));
+            const applied = applyTrackUpdates(collections, updates, userMsg.at, fallbackDate);
+            await persistCollections(applied.file);
+            assistantText = [result.data.reply.trim(), "", ...applied.lines].filter(Boolean).join("\n");
+          } else {
+            assistantText = "Could not update variables.";
+          }
+        }
+      } else if (extractCustomSkill(text, customSkills.skills)) {
+        const hit = extractCustomSkill(text, customSkills.skills)!;
+        const today = todayIsoDate();
+        const range =
+          hit.skill.uses.range === "week"
+            ? weekRange(today)
+            : hit.skill.uses.range === "month"
+              ? monthRange(today)
+              : hit.skill.uses.range === "day"
+                ? { start: today, end: today }
+                : null;
+        let packed = "";
+        if (range && (hit.skill.uses.nutrition || hit.skill.uses.diary || hit.skill.uses.collections)) {
+          const { dayFiles, calDays } = await loadRangeData(range.start, range.end);
+          packed = packPeriod(
+            hit.skill.uses.diary ? dayFiles : [],
+            hit.skill.uses.nutrition ? calDays : [],
+            hit.skill.uses.collections ? collections : undefined,
+            range,
+          );
+        }
+        if (hit.skill.uses.collections) {
+          packed = [packed, packed ? "" : null, "Catalog:", packTrackCatalog(collections)]
+            .filter((x) => x != null)
+            .join("\n");
+        }
+        const result = await callGemini({
+          mode: "skill_run",
+          tag: hit.skill.tag,
+          hint: hit.skill.hint,
+          instructions: hit.skill.instructions,
+          note: hit.note,
+          today,
+          packed,
+        });
+        if (!result.ok) {
+          assistantText = result.message;
+          if (result.quota) setError(result.message);
+        } else if (result.mode === "skill_run") {
+          assistantText = result.data.reply;
+        } else {
+          assistantText = "Could not run skill.";
+        }
       } else {
         let packedDays = "";
         if (isRetrievalQuery(text) && manifest) {
@@ -844,6 +1192,17 @@ export function DiaryApp() {
     />
   );
 
+  const trackablesCatalog = useMemo(
+    () =>
+      [
+        packExportCatalog(collections),
+        "",
+        "Collection details (variables + statics):",
+        packTrackCatalog(collections),
+      ].join("\n"),
+    [collections],
+  );
+
   const chatPane = (
     <ChatPane
       entry={current}
@@ -853,6 +1212,7 @@ export function DiaryApp() {
       draft={draft}
       pending={pending}
       compact={isPhone}
+      customSkills={customSkills.skills}
       onDraft={setDraft}
       onPending={setPending}
       onAddFiles={onAddFiles}
@@ -887,6 +1247,8 @@ export function DiaryApp() {
     ) : tab === "log" ? (
       <CalendarLog
         markedDates={markedDates}
+        days={days}
+        calories={calories}
         onOpenDay={onOpenDay}
         selected={
           selectedDate
@@ -894,6 +1256,7 @@ export function DiaryApp() {
                 date: selectedDate,
                 day: days[selectedDate] ?? null,
                 calories: calories[selectedDate] ?? null,
+                tracked: samplesOnDate(collections, selectedDate),
               }
             : null
         }
@@ -905,18 +1268,17 @@ export function DiaryApp() {
         monthSummaries={monthSummaries}
         generatingMonth={generatingMonth}
         onGenerateMonth={onGenerateMonth}
+        onDeleteMonthSummary={onDeleteMonthSummary}
+        onNeedMonthSummary={onNeedMonthSummary}
       />
     ) : (
-      <ExportView
-        calories={calories}
-        days={days}
-        onNeedRange={async (start, end) => {
-          let d = start;
-          while (d <= end) {
-            await Promise.all([loadDayIntoState(d), loadCalIntoState(d)]);
-            d = addDaysIso(d, 1);
-          }
-        }}
+      <AnalyzeView
+        workspaceId={manifest?.folderId ?? ""}
+        driveToken={token ?? ""}
+        buildSnapshot={buildAnalyzeSnapshot}
+        onLogArtifacts={onLogArtifacts}
+        loggedArtifacts={artifactsIndex}
+        onOpenLoggedArtifact={onOpenArtifact}
       />
     );
 
@@ -1030,7 +1392,26 @@ export function DiaryApp() {
         ) : null}
         {settingsOpen ? (
           <div className="absolute inset-0 z-40 flex flex-col bg-paper">
-            <SettingsPanel onClose={() => setSettingsOpen(false)} />
+            <SettingsPanel
+              onClose={() => setSettingsOpen(false)}
+              onDownloadData={onDownloadData}
+              nutritionRows={nutritionTrackables(
+                calories,
+                manifest?.calorieGoal ?? DEFAULT_CALORIE_GOAL,
+              )}
+              collectionRows={collectionTrackables(collections)}
+              collections={collections}
+              collectionsSyncLabel={drivePending ? "Drive sync pending — retrying…" : null}
+              onCollectionsChange={persistCollections}
+              calorieGoal={manifest?.calorieGoal ?? DEFAULT_CALORIE_GOAL}
+              onCalorieGoalChange={onCalorieGoalChange}
+              customSkills={customSkills}
+              trackablesCatalog={trackablesCatalog}
+              onCustomSkillsChange={persistCustomSkills}
+              artifactsIndex={artifactsIndex}
+              onDeleteArtifact={onDeleteArtifact}
+              onOpenArtifact={onOpenArtifact}
+            />
           </div>
         ) : null}
       </div>

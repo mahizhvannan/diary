@@ -1,7 +1,8 @@
 import { addDaysIso } from "./parse-date";
 import { todayIsoDate } from "./dates";
-import { dayCalorieTotals } from "./nutrition";
-import type { CalorieDay, DayFile } from "./types";
+import { dayCalorieTotals, dayMacroTotals } from "./nutrition";
+import { samplesOnDate, allVariables } from "./track";
+import type { CalorieDay, CollectionsFile, DayFile } from "./types";
 
 export function weekdayMonday0(iso: string): number {
   const [y, m, d] = iso.split("-").map(Number);
@@ -42,6 +43,8 @@ export type LogBound = { id: string; at: string };
 export function collectLogBounds(
   dayFiles: DayFile[],
   calorieDays: CalorieDay[],
+  collections?: CollectionsFile,
+  rangeFilter?: { start: string; end: string },
 ): { startLogId: string; endLogId: string; logs: LogBound[] } {
   const logs: LogBound[] = [];
   for (const day of dayFiles) {
@@ -54,6 +57,16 @@ export function collectLogBounds(
       logs.push({ id: item.id, at: item.at });
     }
   }
+  if (collections) {
+    for (const { variable } of allVariables(collections)) {
+      for (const sample of variable.samples) {
+        if (rangeFilter && (sample.date < rangeFilter.start || sample.date > rangeFilter.end)) {
+          continue;
+        }
+        logs.push({ id: `${variable.id}:${sample.date}:${sample.at}`, at: sample.at });
+      }
+    }
+  }
   logs.sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
   return {
     logs,
@@ -62,9 +75,20 @@ export function collectLogBounds(
   };
 }
 
+export function packedHash(packed: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < packed.length; i++) {
+    h ^= packed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16);
+}
+
 export function packPeriod(
   dayFiles: DayFile[],
   calorieDays: CalorieDay[],
+  collections?: CollectionsFile,
+  rangeFilter?: { start: string; end: string },
 ): string {
   const byDate = new Map<string, { diary?: DayFile; cal?: CalorieDay }>();
   for (const d of dayFiles) {
@@ -73,21 +97,57 @@ export function packPeriod(
   for (const c of calorieDays) {
     byDate.set(c.date, { ...byDate.get(c.date), cal: c });
   }
-  return [...byDate.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
+  if (collections) {
+    for (const { variable } of allVariables(collections)) {
+      for (const sample of variable.samples) {
+        if (rangeFilter && (sample.date < rangeFilter.start || sample.date > rangeFilter.end)) {
+          continue;
+        }
+        if (!byDate.has(sample.date)) byDate.set(sample.date, {});
+      }
+    }
+  }
+  const rows = [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const range = rows.reduce(
+    (s, [, row]) => {
+      const tot = dayCalorieTotals(row.cal);
+      const macros = dayMacroTotals(row.cal);
+      return {
+        eaten: s.eaten + tot.eaten,
+        burned: s.burned + tot.burned,
+        protein: s.protein + macros.protein,
+        carbs: s.carbs + macros.carbs,
+        fat: s.fat + macros.fat,
+      };
+    },
+    { eaten: 0, burned: 0, protein: 0, carbs: 0, fat: 0 },
+  );
+  const header = `Range totals: eaten ${Math.round(range.eaten)}kcal burned ${Math.round(range.burned)}kcal net ${Math.round(range.eaten - range.burned)}kcal · protein ${Math.round(range.protein)}g carbs ${Math.round(range.carbs)}g fat ${Math.round(range.fat)}g`;
+  const body = rows
     .map(([date, row]) => {
       const tot = dayCalorieTotals(row.cal);
+      const macros = dayMacroTotals(row.cal);
       const sessions = (row.diary?.entries ?? [])
         .map((e) => `${e.id}: ${e.title} — ${e.summary || "(no summary)"}`)
         .join("\n");
       const items = (row.cal?.items ?? [])
-        .map((i) => `${i.id}: ${i.kind} ${i.name} ${i.calories}kcal`)
+        .map((i) =>
+          i.kind === "activity"
+            ? `${i.id}: activity ${i.name} ${i.calories}kcal${i.minutes ? ` ${i.minutes}min` : ""}`
+            : `${i.id}: food ${i.name} ${i.calories}kcal P ${i.protein}g C ${i.carbs}g F ${i.fat}g`,
+        )
         .join("\n");
-      return `${date}\nNutrition eaten ${tot.eaten} burned ${tot.burned} net ${tot.net} goal ${row.cal?.goalKcal ?? "-"}\nDiary:\n${sessions || "(none)"}\nCalories:\n${items || "(none)"}`;
+      const tracked = collections
+        ? samplesOnDate(collections, date)
+            .map((t) => `${t.name}${t.unit ? ` (${t.unit})` : ""}: ${t.value}`)
+            .join("\n")
+        : "";
+      return `${date}\nNutrition eaten ${Math.round(tot.eaten)} burned ${Math.round(tot.burned)} net ${Math.round(tot.net)} goal ${row.cal?.goalKcal ?? "-"} · P ${Math.round(macros.protein)}g C ${Math.round(macros.carbs)}g F ${Math.round(macros.fat)}g\nDiary:\n${sessions || "(none)"}\nCalories:\n${items || "(none)"}\nTracked:\n${tracked || "(none)"}`;
     })
     .join("\n\n");
+  return body ? `${header}\n\n${body}` : header;
 }
 
 export function normalizeQuestion(text: string): string {
-  return text.replace(/@weekly\b|@monthly\b|@calories\b/gi, "").replace(/^[:\s,-]+/, "").trim().toLowerCase();
+  return text.replace(/@weekly\b|@monthly\b|@calories\b|@track\b/gi, "").replace(/^[:\s,-]+/, "").trim().toLowerCase();
 }
