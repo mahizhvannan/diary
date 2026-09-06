@@ -71,6 +71,14 @@ export type GeminiRequest =
       note: string;
       today: string;
       packed: string;
+    }
+  | {
+      mode: "analyze";
+      question: string;
+      today: string;
+      catalog: string;
+      packed: string;
+      history?: { role: string; text: string }[];
     };
 
 export type GeminiOk =
@@ -113,7 +121,20 @@ export type GeminiOk =
         };
       };
     }
-  | { ok: true; mode: "skill_run"; data: { reply: string } };
+  | { ok: true; mode: "skill_run"; data: { reply: string } }
+  | {
+      ok: true;
+      mode: "analyze";
+      data: {
+        reply: string;
+        artifact: { title: string; kind: "html" | "svg" | "md"; content: string } | null;
+        chart: {
+          start: string;
+          end: string;
+          series: { type: "builtin" | "variable"; id: string }[];
+        } | null;
+      };
+    };
 
 export type GeminiErr = { ok: false; quota: boolean; message: string };
 

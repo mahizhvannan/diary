@@ -80,6 +80,14 @@ type Body =
       note: string;
       today: string;
       packed: string;
+    }
+  | {
+      mode: "analyze";
+      question: string;
+      today: string;
+      catalog: string;
+      packed: string;
+      history?: { role: string; text: string }[];
     };
 
 function parseModelJson(raw: string): unknown {
@@ -272,6 +280,44 @@ const SKILL_RUN_SCHEMA = {
   type: "object",
   properties: {
     reply: { type: "string" },
+  },
+  required: ["reply"],
+};
+
+const ANALYZE_SCHEMA = {
+  type: "object",
+  properties: {
+    reply: { type: "string" },
+    artifact: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        kind: { type: "string" },
+        content: { type: "string" },
+      },
+      required: ["title", "kind", "content"],
+      nullable: true,
+    },
+    chart: {
+      type: "object",
+      properties: {
+        start: { type: "string" },
+        end: { type: "string" },
+        series: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              type: { type: "string" },
+              id: { type: "string" },
+            },
+            required: ["type", "id"],
+          },
+        },
+      },
+      required: ["start", "end", "series"],
+      nullable: true,
+    },
   },
   required: ["reply"],
 };
@@ -536,6 +582,41 @@ ${body.packed || "(none)"}
 JSON: { "reply": "answer for the user" }`;
 }
 
+function analyzePrompt(body: Extract<Body, { mode: "analyze" }>): string {
+  const history =
+    body.history?.length
+      ? body.history
+          .slice(-8)
+          .map((m) => `${m.role}: ${m.text}`)
+          .join("\n")
+      : "(none)";
+  return `You are Analyze for a personal diary app. Use only the packed diary data and catalog. Do not invent numbers. Today is ${body.today}.
+
+Answer in GitHub-flavored Markdown (tables welcome).
+If a line chart over time helps, set chart with start/end (YYYY-MM-DD, ≤93 days) and series from the catalog (builtin ids like carbs, or variable uuids).
+If a one-off visual helps (pie, comparison card), set artifact with kind html|svg|md and self-contained content (no external scripts/CDN).
+If neither chart nor artifact is needed, set them null / omit.
+
+Prior turns:
+${history}
+
+User question:
+${body.question}
+
+Catalog:
+${body.catalog}
+
+Packed diary data:
+${body.packed}
+
+JSON:
+{
+  "reply": "markdown answer",
+  "artifact": { "title": "short title", "kind": "html", "content": "<!doctype html>..." },
+  "chart": { "start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "series": [{ "type": "builtin", "id": "carbs" }] }
+}`;
+}
+
 export async function POST(req: NextRequest) {
   const headerKey = req.headers.get("x-diary-gemini-key")?.trim();
   const envKey = process.env.GEMINI_API_KEY?.trim();
@@ -796,6 +877,55 @@ export async function POST(req: NextRequest) {
         ok: true,
         mode: "skill_run",
         data: { reply: parsed.reply || raw },
+      });
+    }
+
+    if (body.mode === "analyze") {
+      const raw = await generate(apiKey, analyzePrompt(body), ANALYZE_SCHEMA, [], models);
+      const parsed = parseModelJson(raw) as {
+        __quota?: boolean;
+        message?: string;
+        reply?: string;
+        artifact?: { title?: string; kind?: string; content?: string } | null;
+        chart?: {
+          start?: string;
+          end?: string;
+          series?: { type?: string; id?: string }[];
+        } | null;
+      };
+      if (parsed.__quota) {
+        return NextResponse.json({ ok: false, quota: true, message: parsed.message || "quota" }, { status: 429 });
+      }
+      const kindRaw = String(parsed.artifact?.kind || "").toLowerCase();
+      const kind =
+        kindRaw === "html" || kindRaw === "svg" || kindRaw === "md" ? kindRaw : null;
+      const artifact =
+        parsed.artifact?.content && kind
+          ? {
+              title: (parsed.artifact.title || "Analyze artifact").slice(0, 120),
+              kind,
+              content: parsed.artifact.content,
+            }
+          : null;
+      const series = (parsed.chart?.series ?? [])
+        .filter((s) => s.id && (s.type === "builtin" || s.type === "variable"))
+        .map((s) => ({ type: s.type as "builtin" | "variable", id: String(s.id) }));
+      const chart =
+        parsed.chart?.start && parsed.chart?.end && series.length
+          ? {
+              start: parsed.chart.start,
+              end: parsed.chart.end,
+              series,
+            }
+          : null;
+      return NextResponse.json({
+        ok: true,
+        mode: "analyze",
+        data: {
+          reply: parsed.reply || raw,
+          artifact,
+          chart,
+        },
       });
     }
 

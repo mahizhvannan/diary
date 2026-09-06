@@ -1273,9 +1273,16 @@ export function DiaryApp() {
       />
     ) : (
       <AnalyzeView
-        workspaceId={manifest?.folderId ?? ""}
-        driveToken={token ?? ""}
+        collections={collections}
         buildSnapshot={buildAnalyzeSnapshot}
+        onNeedRange={async (start, end) => {
+          const loaded: Record<string, CalorieDay> = { ...calories };
+          for (const date of datesInRange(start, end)) {
+            const cal = await loadCalIntoState(date);
+            if (cal) loaded[date] = cal;
+          }
+          return loaded;
+        }}
         onLogArtifacts={onLogArtifacts}
         loggedArtifacts={artifactsIndex}
         onOpenLoggedArtifact={onOpenArtifact}
