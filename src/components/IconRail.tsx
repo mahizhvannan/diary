@@ -4,14 +4,11 @@ import { useEffect, useState } from "react";
 import { useTheme } from "../lib/theme";
 import {
   CHEAP_GEMINI_MODELS,
-  CURSOR_MODELS,
   DEFAULT_AI_SETTINGS,
-  cursorTokensUsed,
   loadAiSettings,
   loadAiUsage,
   saveAiSettings,
   type AiSettings,
-  type CursorApiKeyEntry,
 } from "../lib/ai-settings";
 import { formatStamp } from "../lib/dates";
 import { DEFAULT_CALORIE_GOAL } from "../lib/nutrition";
@@ -231,9 +228,6 @@ export function SettingsPanel({
   const [skillBusy, setSkillBusy] = useState(false);
   const [skillError, setSkillError] = useState<string | null>(null);
   const [draftSkill, setDraftSkill] = useState<CustomSkill | null>(null);
-  const [cursorLabel, setCursorLabel] = useState("");
-  const [cursorKeyDraft, setCursorKeyDraft] = useState("");
-  const [showCursorKey, setShowCursorKey] = useState(false);
   const [artifactBusyId, setArtifactBusyId] = useState<string | null>(null);
   const [viewingArtifact, setViewingArtifact] = useState<ArtifactFile | null>(null);
   const [artifactLoadError, setArtifactLoadError] = useState<string | null>(null);
@@ -251,10 +245,6 @@ export function SettingsPanel({
   const budgetGemini = Math.max(1, ai.dailyRequestBudget);
   const leftGemini = Math.max(0, budgetGemini - usedGemini);
   const pctGemini = Math.min(100, Math.round((usedGemini / budgetGemini) * 100));
-  const usedCursorTokens = cursorTokensUsed(usage);
-  const budgetCursor = Math.max(1, ai.dailyCursorTokenBudget);
-  const leftCursor = Math.max(0, budgetCursor - usedCursorTokens);
-  const pctCursor = Math.min(100, Math.round((usedCursorTokens / budgetCursor) * 100));
 
   const title =
     screen === "root"
@@ -328,7 +318,7 @@ export function SettingsPanel({
             </label>
             <RowButton
               label="Usage limit"
-              hint={`Chat ${leftGemini}/${budgetGemini} · Cursor ${usedCursorTokens.toLocaleString()} tok`}
+              hint={`${leftGemini} of ${budgetGemini} Gemini requests left`}
               onClick={() => {
                 setUsage(loadAiUsage());
                 setScreen("usage");
@@ -336,11 +326,7 @@ export function SettingsPanel({
             />
             <RowButton
               label="Configure AI provider"
-              hint={
-                ai.geminiApiKey || ai.cursorApiKeys.length
-                  ? `Gemini + ${ai.cursorApiKeys.length} Cursor key${ai.cursorApiKeys.length === 1 ? "" : "s"}`
-                  : "Server keys · Gemini / Cursor"
-              }
+              hint={ai.geminiApiKey ? "Using device key · Gemini" : "Server key · Gemini"}
               onClick={() => {
                 setAi(loadAiSettings());
                 setScreen("ai");
@@ -387,83 +373,41 @@ export function SettingsPanel({
 
         {screen === "usage" ? (
           <div className="px-4 py-4">
-            <div className="border-b border-ink/10 pb-4">
-              <p className="text-sm font-medium">Chat (Gemini)</p>
-              <div className="mt-2 h-2 w-full overflow-hidden bg-ink/10">
-                <div
-                  className="h-full bg-accent transition-[width]"
-                  style={{ width: `${pctGemini}%` }}
-                />
-              </div>
-              <p className="mt-2 text-sm">
-                {leftGemini} of {budgetGemini} requests left · {usedGemini} used today
-              </p>
-              <label className="mt-3 block text-sm">
-                Daily chat request budget
-                <input
-                  type="number"
-                  min={1}
-                  value={ai.dailyRequestBudget}
-                  onChange={(e) =>
-                    setAi({ ...ai, dailyRequestBudget: Math.max(1, Number(e.target.value) || 1) })
-                  }
-                  className="mt-1 block w-full border border-ink/20 bg-paper px-2 py-1.5 text-sm"
-                />
-              </label>
+            <p className="text-sm font-medium">Gemini (AI Studio API)</p>
+            <div className="mt-2 h-2 w-full overflow-hidden bg-ink/10">
+              <div
+                className="h-full bg-accent transition-[width]"
+                style={{ width: `${pctGemini}%` }}
+              />
             </div>
-
-            <div className="pt-4">
-              <p className="text-sm font-medium">Cursor (Analyze)</p>
-              <div className="mt-2 h-2 w-full overflow-hidden bg-ink/10">
-                <div
-                  className="h-full bg-accent transition-[width]"
-                  style={{ width: `${pctCursor}%` }}
-                />
-              </div>
-              <p className="mt-2 text-sm">
-                {usage.cursorRequests} run{usage.cursorRequests === 1 ? "" : "s"} today
-              </p>
-              <p className="mt-1 text-sm text-ink-mute">
-                Input {usage.cursorInputTokens.toLocaleString()} · Output{" "}
-                {usage.cursorOutputTokens.toLocaleString()} · Total{" "}
-                {usedCursorTokens.toLocaleString()} tokens
-              </p>
-              <p className="mt-1 text-xs text-ink-mute">
-                Soft local cap {leftCursor.toLocaleString()} of {budgetCursor.toLocaleString()}{" "}
-                tokens left. Billed Cursor usage may differ.
-              </p>
-              <label className="mt-3 block text-sm">
-                Daily Cursor token budget
-                <input
-                  type="number"
-                  min={1}
-                  value={ai.dailyCursorTokenBudget}
-                  onChange={(e) =>
-                    setAi({
-                      ...ai,
-                      dailyCursorTokenBudget: Math.max(1, Number(e.target.value) || 1),
-                    })
-                  }
-                  className="mt-1 block w-full border border-ink/20 bg-paper px-2 py-1.5 text-sm"
-                />
-              </label>
-            </div>
-
+            <p className="mt-2 text-sm">
+              {leftGemini} of {budgetGemini} requests left · {usedGemini} used today
+            </p>
+            <p className="mt-2 text-xs text-ink-mute">
+              Soft local cap. Real Google AI Studio / API quota is separate from Gemini web chat.
+            </p>
+            <label className="mt-3 block text-sm">
+              Daily request budget
+              <input
+                type="number"
+                min={1}
+                value={ai.dailyRequestBudget}
+                onChange={(e) =>
+                  setAi({ ...ai, dailyRequestBudget: Math.max(1, Number(e.target.value) || 1) })
+                }
+                className="mt-1 block w-full border border-ink/20 bg-paper px-2 py-1.5 text-sm"
+              />
+            </label>
             <button
               type="button"
               className="mt-4 border border-ink bg-ink px-3 py-1.5 text-sm text-paper"
               onClick={() => {
-                const cur = loadAiSettings();
-                saveAiSettings({
-                  ...cur,
-                  dailyRequestBudget: ai.dailyRequestBudget,
-                  dailyCursorTokenBudget: ai.dailyCursorTokenBudget,
-                });
+                saveAiSettings({ ...loadAiSettings(), dailyRequestBudget: ai.dailyRequestBudget });
                 setAiSaved(true);
                 window.setTimeout(() => setAiSaved(false), 1200);
               }}
             >
-              Save budgets
+              Save budget
             </button>
             {aiSaved ? <p className="mt-2 text-xs text-ink-mute">Saved.</p> : null}
           </div>
@@ -532,130 +476,6 @@ export function SettingsPanel({
               Save
             </button>
             {aiSaved ? <p className="mt-2 text-xs text-ink-mute">Saved on this device.</p> : null}
-
-            <div className="mt-8 border-t border-ink/15 pt-4">
-              <p className="text-sm font-medium">Cursor CLI agent</p>
-              <p className="mt-1 text-xs text-ink-mute">
-                Used by AnalyzeBeta. Keys stay on this device. Active key is sent only to your local
-                Next server — never to Drive. Blank active key falls back to server CURSOR_API_KEY.
-              </p>
-              <label className="mt-3 block text-sm">
-                Cursor model
-                <select
-                  value={ai.cursorModel}
-                  onChange={(e) => setAi({ ...ai, cursorModel: e.target.value })}
-                  className="mt-1 block w-full border border-ink/20 bg-paper px-2 py-1.5 text-sm"
-                >
-                  {CURSOR_MODELS.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <ul className="mt-3 divide-y divide-ink/10 border border-ink/10">
-                {ai.cursorApiKeys.length === 0 ? (
-                  <li className="px-3 py-2 text-sm text-ink-mute">No keys yet.</li>
-                ) : (
-                  ai.cursorApiKeys.map((k) => (
-                    <li key={k.id} className="flex items-center justify-between gap-2 px-3 py-2">
-                      <label className="flex min-w-0 items-center gap-2 text-sm">
-                        <input
-                          type="radio"
-                          name="cursor-key"
-                          checked={ai.activeCursorKeyId === k.id}
-                          onChange={() => setAi({ ...ai, activeCursorKeyId: k.id })}
-                        />
-                        <span className="truncate">
-                          {k.label || "Key"} · …{k.key.slice(-6)}
-                        </span>
-                      </label>
-                      <button
-                        type="button"
-                        className="shrink-0 text-xs text-ink-mute"
-                        onClick={() => {
-                          const nextKeys = ai.cursorApiKeys.filter((x) => x.id !== k.id);
-                          setAi({
-                            ...ai,
-                            cursorApiKeys: nextKeys,
-                            activeCursorKeyId:
-                              ai.activeCursorKeyId === k.id
-                                ? nextKeys[0]?.id ?? null
-                                : ai.activeCursorKeyId,
-                          });
-                        }}
-                      >
-                        Remove
-                      </button>
-                    </li>
-                  ))
-                )}
-              </ul>
-              <label className="mt-3 block text-sm">
-                Label
-                <input
-                  value={cursorLabel}
-                  onChange={(e) => setCursorLabel(e.target.value)}
-                  placeholder="Personal / rotate-1"
-                  className="mt-1 block w-full border border-ink/20 bg-paper px-2 py-1.5 text-sm"
-                />
-              </label>
-              <label className="mt-2 block text-sm">
-                New Cursor API key
-                <div className="mt-1 flex gap-2">
-                  <input
-                    type={showCursorKey ? "text" : "password"}
-                    value={cursorKeyDraft}
-                    onChange={(e) => setCursorKeyDraft(e.target.value)}
-                    placeholder="cursor_… or key from dashboard"
-                    autoComplete="off"
-                    spellCheck={false}
-                    className="block w-full border border-ink/20 bg-paper px-2 py-1.5 font-mono text-sm"
-                  />
-                  <button
-                    type="button"
-                    className="shrink-0 text-xs text-ink-mute"
-                    onClick={() => setShowCursorKey((v) => !v)}
-                  >
-                    {showCursorKey ? "Hide" : "Show"}
-                  </button>
-                </div>
-              </label>
-              <button
-                type="button"
-                disabled={!cursorKeyDraft.trim()}
-                className="mt-3 border border-ink/40 px-3 py-1.5 text-sm disabled:opacity-40"
-                onClick={() => {
-                  const entry: CursorApiKeyEntry = {
-                    id: crypto.randomUUID(),
-                    label: cursorLabel.trim() || `Key ${ai.cursorApiKeys.length + 1}`,
-                    key: cursorKeyDraft.trim(),
-                    createdAt: new Date().toISOString(),
-                  };
-                  const next: AiSettings = {
-                    ...ai,
-                    cursorApiKeys: [...ai.cursorApiKeys, entry],
-                    activeCursorKeyId: entry.id,
-                  };
-                  setAi(next);
-                  setCursorKeyDraft("");
-                  setCursorLabel("");
-                }}
-              >
-                Add key
-              </button>
-              <button
-                type="button"
-                className="mt-2 ml-2 border border-ink bg-ink px-3 py-1.5 text-sm text-paper"
-                onClick={() => {
-                  saveAiSettings(ai);
-                  setAiSaved(true);
-                  window.setTimeout(() => setAiSaved(false), 1200);
-                }}
-              >
-                Save Cursor settings
-              </button>
-            </div>
           </div>
         ) : null}
 
