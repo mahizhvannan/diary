@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type PointerEvent } from "react";
 import { useTheme } from "../lib/theme";
 import {
   CHEAP_GEMINI_MODELS,
@@ -19,7 +19,7 @@ import { callGemini } from "../lib/gemini-client";
 import { CollectionsView } from "./CollectionsView";
 import { ArtifactViewerPanel } from "./ArtifactViewer";
 
-type Tab = "chat" | "log" | "analyze";
+type Tab = "chat" | "log";
 type Screen =
   | "root"
   | "usage"
@@ -63,13 +63,18 @@ function SettingsGearIcon() {
   );
 }
 
+/** Avoid mobile browsers scrolling the focused control into view under the URL bar. */
+function noFocusScroll(e: PointerEvent<HTMLButtonElement>) {
+  e.preventDefault();
+}
+
 export function IconRail({ tab, onTab, placement = "side", settingsOpen, onSettings }: Props) {
   const bottom = placement === "bottom";
   return (
     <nav
       className={`flex shrink-0 items-center border-ink/15 bg-paper-2 ${
         bottom
-          ? "order-last w-full justify-around border-t pb-[env(safe-area-inset-bottom)]"
+          ? "order-last w-full justify-around border-t pb-[max(0.25rem,env(safe-area-inset-bottom))]"
           : "flex-row md:h-full md:w-14 md:flex-col md:border-r"
       }`}
     >
@@ -78,6 +83,7 @@ export function IconRail({ tab, onTab, placement = "side", settingsOpen, onSetti
         title="Chat"
         aria-label="Chat"
         aria-pressed={tab === "chat"}
+        onPointerDown={bottom ? noFocusScroll : undefined}
         onClick={() => onTab("chat")}
         className={`flex h-12 w-12 items-center justify-center ${tab === "chat" ? "text-ink" : "text-ink-mute"}`}
       >
@@ -90,6 +96,7 @@ export function IconRail({ tab, onTab, placement = "side", settingsOpen, onSetti
         title="Logs"
         aria-label="Logs"
         aria-pressed={tab === "log"}
+        onPointerDown={bottom ? noFocusScroll : undefined}
         onClick={() => onTab("log")}
         className={`flex h-12 w-12 items-center justify-center ${tab === "log" ? "text-ink" : "text-ink-mute"}`}
       >
@@ -100,24 +107,10 @@ export function IconRail({ tab, onTab, placement = "side", settingsOpen, onSetti
       </button>
       <button
         type="button"
-        title="Analyze (beta)"
-        aria-label="Analyze, beta"
-        aria-pressed={tab === "analyze"}
-        onClick={() => onTab("analyze")}
-        className={`relative flex h-12 w-12 items-center justify-center ${tab === "analyze" ? "text-ink" : "text-ink-mute"}`}
-      >
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
-          <path d="M4 18V6M8 14l3-8 3 5 2-3 4 6" stroke="currentColor" strokeWidth="1.4" />
-        </svg>
-        <span className="absolute right-0.5 bottom-1 rounded-sm bg-accent px-0.5 text-[8px] leading-3 tracking-wide text-paper uppercase">
-          beta
-        </span>
-      </button>
-      <button
-        type="button"
         title="Settings"
         aria-label="Settings"
         aria-pressed={settingsOpen}
+        onPointerDown={bottom ? noFocusScroll : undefined}
         onClick={onSettings}
         className={`flex h-12 w-12 items-center justify-center ${settingsOpen ? "text-ink" : "text-ink-mute"} ${bottom ? "" : "ml-auto md:mt-auto md:ml-0 md:mb-2"}`}
       >
@@ -182,6 +175,7 @@ function TrackableList({ rows }: { rows: TrackableRow[] }) {
 export function SettingsPanel({
   onClose,
   onDownloadData,
+  onManualSync,
   nutritionRows,
   collectionRows,
   collections,
@@ -198,6 +192,7 @@ export function SettingsPanel({
 }: {
   onClose: () => void;
   onDownloadData?: () => Promise<void> | void;
+  onManualSync?: () => Promise<string> | string;
   nutritionRows: TrackableRow[];
   collectionRows: TrackableRow[];
   collections: CollectionsFile;
@@ -217,6 +212,9 @@ export function SettingsPanel({
   const [screen, setScreen] = useState<Screen>("root");
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [ai, setAi] = useState<AiSettings>(DEFAULT_AI_SETTINGS);
   const [usage, setUsage] = useState(() => loadAiUsage());
   const [showKey, setShowKey] = useState(false);
@@ -344,9 +342,39 @@ export function SettingsPanel({
             />
             <RowButton
               label="Artifacts"
-              hint={`${artifactsIndex.items.length} logged from Analyze`}
+              hint={`${artifactsIndex.items.length} saved artifacts`}
               onClick={() => setScreen("artifacts")}
             />
+            <div className="border-t border-ink/10 px-4 py-4">
+              <p className="text-sm">Drive sync</p>
+              <p className="mt-1 text-xs text-ink-mute">
+                Compare local and Drive; keep whichever side was updated last (ties keep local).
+              </p>
+              <button
+                type="button"
+                disabled={!onManualSync || syncBusy}
+                className="mt-2 border border-ink/40 px-3 py-1.5 text-sm disabled:opacity-40"
+                onClick={() => {
+                  if (!onManualSync) return;
+                  setSyncBusy(true);
+                  setSyncError(null);
+                  setSyncMessage(null);
+                  void Promise.resolve(onManualSync())
+                    .then((msg) => setSyncMessage(msg))
+                    .catch((e) =>
+                      setSyncError(e instanceof Error ? e.message : "Sync failed"),
+                    )
+                    .finally(() => setSyncBusy(false));
+                }}
+              >
+                {syncBusy ? "Syncing…" : "Sync now"}
+              </button>
+              {syncMessage ? <p className="mt-2 text-sm text-ink-mute">{syncMessage}</p> : null}
+              {syncError ? <p className="mt-2 text-sm">{syncError}</p> : null}
+              {collectionsSyncLabel ? (
+                <p className="mt-2 text-xs text-ink-mute">{collectionsSyncLabel}</p>
+              ) : null}
+            </div>
             <div className="border-t border-ink/10 px-4 py-4">
               <p className="text-sm">Download my data</p>
               <button
@@ -660,11 +688,11 @@ export function SettingsPanel({
         {screen === "artifacts" ? (
           <div>
             <p className="border-b border-ink/10 px-4 py-3 text-xs text-ink-mute">
-              Logged AnalyzeBeta outputs on Drive. Tap one to open it in-app.
+              Artifacts saved on Drive. Tap one to open it in-app.
             </p>
             {artifactLoadError ? <p className="px-4 py-2 text-sm">{artifactLoadError}</p> : null}
             {artifactsIndex.items.length === 0 ? (
-              <p className="px-4 py-4 text-sm text-ink-mute">No artifacts yet. Log from Analyze.</p>
+              <p className="px-4 py-4 text-sm text-ink-mute">No artifacts yet.</p>
             ) : (
               <ul className="divide-y divide-ink/10">
                 {artifactsIndex.items.map((a) => (

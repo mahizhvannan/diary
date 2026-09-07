@@ -8,7 +8,6 @@ export const BUILTIN_SKILLS: Skill[] = [
   { id: "weekly", tag: "@weekly", hint: "Ask about this week’s diary, calories, and macros" },
   { id: "monthly", tag: "@monthly", hint: "Ask about this month’s diary, calories, and macros" },
   { id: "track", tag: "@track", hint: "Update collection variables (weight, sleep, …)" },
-  { id: "analyze", tag: "@analyze", hint: "Open Analyze tab for charts and deep questions" },
 ];
 
 /** @deprecated use BUILTIN_SKILLS — kept for older imports */

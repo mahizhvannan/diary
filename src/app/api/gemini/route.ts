@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveServerOrHeaderKey } from "../../../lib/server-ai-auth";
 
+/** Gemini Analyze/chat can exceed Hobby's default; Pro Fluid allows up to 300s. */
+export const maxDuration = 60;
+
 const MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"];
 
 function allowedModel(requested: string | null): string[] {
@@ -15,6 +18,7 @@ type Body =
       mode: "chat";
       messages: { role: string; text: string }[];
       packedDays: string;
+      packedTrack?: string;
       images?: ChatImage[];
     }
   | {
@@ -381,8 +385,12 @@ Rules:
 - Do NOT say you logged, recorded, filed, or saved anything. Logging is a separate button the user clicks.
 - If they ask a general question (products, APIs, facts), answer it from knowledge.
 - If diary excerpts are provided, use them for questions about their past. Cite dates as YYYY-MM-DD when you use them.
+- Tracked variables / statics below are the user's saved collection data (e.g. height, weight). Use them to answer BMI and similar questions: compute when you have the inputs (BMI = kg / m²). Say if a needed value is missing.
 - If photos are attached, describe or use what you see.
 - A greeting gets a short human reply, not a filing confirmation.
+
+Tracked collections (variables + statics; may be empty):
+${body.packedTrack || "(none)"}
 
 Diary excerpts (may be empty):
 ${body.packedDays || "(none)"}

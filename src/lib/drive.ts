@@ -163,7 +163,19 @@ async function uploadJson(opts: {
 }
 
 async function trashFile(token: string, fileId: string): Promise<void> {
-  await driveJson(token, `${DRIVE}/files/${fileId}`, { method: "DELETE" });
+  const res = await fetch(`${DRIVE}/files/${fileId}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+  if (res.status === 401) {
+    throw new Error("Google sign-in expired. Connect Drive again.");
+  }
+  // Already gone / no access — treat as deleted so local index can still clean up.
+  if (res.status === 404 || res.status === 410) return;
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Drive error ${res.status}: ${text.slice(0, 400)}`);
+  }
 }
 
 export async function ensureDiaryStore(token: string): Promise<Manifest> {
@@ -672,7 +684,9 @@ export async function deleteArtifact(
   index: ArtifactsIndex,
 ): Promise<{ manifest: Manifest; index: ArtifactsIndex }> {
   const row = (manifest.artifactFiles ?? []).find((a) => a.id === id);
-  if (row) await trashFile(token, row.fileId);
+  const fromIndex = index.items.find((i) => i.id === id);
+  const fileId = row?.fileId ?? fromIndex?.fileId;
+  if (fileId) await trashFile(token, fileId);
 
   const nextIndex: ArtifactsIndex = { items: index.items.filter((i) => i.id !== id) };
   const indexFileId = await uploadJson({

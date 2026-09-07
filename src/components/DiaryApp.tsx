@@ -1,7 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AnalyzeView } from "../components/AnalyzeView";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CalendarLog } from "../components/CalendarLog";
 import { ChatPane } from "../components/ChatPane";
 import { IconRail, SettingsPanel } from "../components/IconRail";
@@ -12,8 +11,6 @@ import {
   deleteCachedCalorieDay,
   deleteCachedDay,
   deleteCachedMonthSummary,
-  loadAllCachedCalories,
-  loadAllCachedDays,
   loadAllCachedMonthSummaries,
   loadCachedArtifact,
   loadCachedArtifactsIndex,
@@ -106,13 +103,26 @@ import type {
   MonthSummaryFile,
   PeriodQaFile,
 } from "../lib/types";
-import type { DiarySnapshot } from "../lib/analyze-types";
 import { collectionTrackables, nutritionTrackables } from "../lib/trackables";
 import { buildDiaryExportZip, downloadBlob } from "../lib/export-zip";
+import { runManualSync } from "../lib/manual-sync";
 import { useGoogleDriveToken } from "../lib/use-google-drive";
 import { useTheme } from "../lib/theme";
 
-const SIDEBAR_LIMIT = 20;
+/** First login / connect: only hydrate this many calendar dates. */
+const INITIAL_DATE_BATCH = 10;
+/** Each scroll “load older” fetches this many more dates. */
+const DATE_PAGE = 10;
+/** Hard cap so session list never pulls the whole archive into memory. */
+const MAX_LOADED_DATES = 40;
+const SIDEBAR_LIMIT = 40;
+
+function sortedArchiveDates(manifest: Manifest | null): string[] {
+  const s = new Set<string>();
+  for (const d of manifest?.days ?? []) s.add(d.date);
+  for (const d of manifest?.calorieDays ?? []) s.add(d.date);
+  return [...s].sort((a, b) => b.localeCompare(a));
+}
 
 function freshEntry(): DiaryEntry {
   const now = new Date().toISOString();
@@ -184,7 +194,7 @@ export function DiaryApp() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
-  const [tab, setTab] = useState<"chat" | "log" | "analyze">("chat");
+  const [tab, setTab] = useState<"chat" | "log">("chat");
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [phonePreview, setPhonePreview] = useState(true);
   const [narrow, setNarrow] = useState(false);
@@ -197,6 +207,10 @@ export function DiaryApp() {
   const [artifactsIndex, setArtifactsIndex] = useState<ArtifactsIndex>({ items: [] });
   const [generatingMonth, setGeneratingMonth] = useState(false);
   const [drivePending, setDrivePending] = useState(false);
+  const [archiveDates, setArchiveDates] = useState<string[]>([]);
+  const [loadedDateCount, setLoadedDateCount] = useState(0);
+  const [loadingMoreSessions, setLoadingMoreSessions] = useState(false);
+  const loadingMoreLock = useRef(false);
 
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 767px)");
@@ -227,10 +241,22 @@ export function DiaryApp() {
       const cached = await loadCachedManifest();
       if (cancelled) return;
       if (cached) setManifest(cached);
-      const loaded = await loadAllCachedDays();
-      if (!cancelled) setDays(loaded);
-      const cal = await loadAllCachedCalories();
-      if (!cancelled) setCalories(cal);
+      const dates = sortedArchiveDates(cached);
+      setArchiveDates(dates);
+      const initial = dates.slice(0, INITIAL_DATE_BATCH);
+      const nextDays: Record<string, DayFile> = {};
+      const nextCals: Record<string, CalorieDay> = {};
+      for (const date of initial) {
+        const day = await loadCachedDay(date);
+        if (day) nextDays[date] = day;
+        const cal = await loadCachedCalorieDay(date);
+        if (cal) nextCals[date] = cal;
+      }
+      if (!cancelled) {
+        setDays(nextDays);
+        setCalories(nextCals);
+        setLoadedDateCount(initial.length);
+      }
       const months = await loadAllCachedMonthSummaries();
       if (!cancelled) setMonthSummaries(months);
       const qa = await loadCachedPeriodQa();
@@ -287,34 +313,34 @@ export function DiaryApp() {
           await clearCollectionsPending();
         }
         const latest = (await loadCachedManifest()) ?? colManifest;
-        for (const row of latest.days) {
-          const cached = await loadCachedDay(row.date);
-          if (cached) continue;
-          const remote = await loadDayFile(token, latest, row.date);
-          if (remote) {
-            await saveCachedDay(remote);
-            if (!cancelled) setDays((prev) => ({ ...prev, [row.date]: remote }));
+        const dates = sortedArchiveDates(latest);
+        if (!cancelled) setArchiveDates(dates);
+        const initial = dates.slice(0, INITIAL_DATE_BATCH);
+        // Drive wins for the first batch only — older dates load on scroll / calendar open.
+        for (const date of initial) {
+          if (latest.days.some((d) => d.date === date)) {
+            const remote = await loadDayFile(token, latest, date);
+            if (remote) {
+              await saveCachedDay(remote);
+              if (!cancelled) setDays((prev) => ({ ...prev, [date]: remote }));
+            }
+          }
+          if ((latest.calorieDays ?? []).some((d) => d.date === date)) {
+            const remote = await loadCalorieFile(token, latest, date);
+            if (remote) {
+              await saveCachedCalorieDay(remote);
+              if (!cancelled) setCalories((prev) => ({ ...prev, [date]: remote }));
+            }
           }
         }
-        for (const row of latest.calorieDays ?? []) {
-          const cached = await loadCachedCalorieDay(row.date);
-          if (cached) continue;
-          const remote = await loadCalorieFile(token, latest, row.date);
-          if (remote) {
-            await saveCachedCalorieDay(remote);
-            if (!cancelled) setCalories((prev) => ({ ...prev, [row.date]: remote }));
-          }
-        }
-        for (const row of latest.monthSummaries ?? []) {
-          const cached = await loadCachedMonthSummary(row.month);
-          if (cached) {
-            if (!cancelled) setMonthSummaries((prev) => ({ ...prev, [row.month]: cached }));
-            continue;
-          }
-          const remote = await loadMonthSummary(token, latest, row.month);
+        if (!cancelled) setLoadedDateCount(initial.length);
+        const thisMonth = todayIsoDate().slice(0, 7);
+        const monthRow = (latest.monthSummaries ?? []).find((r) => r.month === thisMonth);
+        if (monthRow) {
+          const remote = await loadMonthSummary(token, latest, thisMonth);
           if (remote) {
             await saveCachedMonthSummary(remote);
-            if (!cancelled) setMonthSummaries((prev) => ({ ...prev, [row.month]: remote }));
+            if (!cancelled) setMonthSummaries((prev) => ({ ...prev, [thisMonth]: remote }));
           }
         }
         const qa = await loadPeriodQa(token, latest);
@@ -345,6 +371,58 @@ export function DiaryApp() {
     [days, current, currentDate],
   );
 
+  const canLoadMoreSessions =
+    loadedDateCount < Math.min(archiveDates.length, MAX_LOADED_DATES);
+
+  const pullMoreArchiveDates = useCallback(async () => {
+    if (loadingMoreLock.current || !canLoadMoreSessions) return;
+    loadingMoreLock.current = true;
+    setLoadingMoreSessions(true);
+    try {
+      const nextCount = Math.min(
+        loadedDateCount + DATE_PAGE,
+        MAX_LOADED_DATES,
+        archiveDates.length,
+      );
+      const slice = archiveDates.slice(loadedDateCount, nextCount);
+      for (const date of slice) {
+        if (token && manifest) {
+          if (manifest.days.some((d) => d.date === date)) {
+            try {
+              const remote = await loadDayFile(token, manifest, date);
+              if (remote) {
+                await saveCachedDay(remote);
+                setDays((prev) => ({ ...prev, [date]: remote }));
+                continue;
+              }
+            } catch {
+              /* cache fallback */
+            }
+          }
+          if ((manifest.calorieDays ?? []).some((d) => d.date === date)) {
+            try {
+              const remote = await loadCalorieFile(token, manifest, date);
+              if (remote) {
+                await saveCachedCalorieDay(remote);
+                setCalories((prev) => ({ ...prev, [date]: remote }));
+              }
+            } catch {
+              /* cache fallback */
+            }
+          }
+        }
+        const cachedDay = await loadCachedDay(date);
+        if (cachedDay) setDays((prev) => ({ ...prev, [date]: cachedDay }));
+        const cachedCal = await loadCachedCalorieDay(date);
+        if (cachedCal) setCalories((prev) => ({ ...prev, [date]: cachedCal }));
+      }
+      setLoadedDateCount(nextCount);
+    } finally {
+      setLoadingMoreSessions(false);
+      loadingMoreLock.current = false;
+    }
+  }, [archiveDates, canLoadMoreSessions, loadedDateCount, manifest, token]);
+
   const savedToDrive = Boolean(
     current.savedToDrive ||
       Object.values(days).some((d) => d.entries.some((e) => e.id === current.id)),
@@ -366,35 +444,47 @@ export function DiaryApp() {
   );
 
   const loadDayIntoState = async (date: string): Promise<DayFile | null> => {
+    if (token && manifest) {
+      try {
+        const remote = await loadDayFile(token, manifest, date);
+        if (remote) {
+          setDays((prev) => ({ ...prev, [date]: remote }));
+          await saveCachedDay(remote);
+          return remote;
+        }
+      } catch {
+        /* fall through to cache */
+      }
+    }
     if (days[date]) return days[date];
     const cached = await loadCachedDay(date);
     if (cached) {
       setDays((prev) => ({ ...prev, [date]: cached }));
       return cached;
     }
-    if (!token || !manifest) return null;
-    const remote = await loadDayFile(token, manifest, date);
-    if (remote) {
-      setDays((prev) => ({ ...prev, [date]: remote }));
-      await saveCachedDay(remote);
-    }
-    return remote;
+    return null;
   };
 
   const loadCalIntoState = async (date: string): Promise<CalorieDay | null> => {
+    if (token && manifest) {
+      try {
+        const remote = await loadCalorieFile(token, manifest, date);
+        if (remote) {
+          setCalories((prev) => ({ ...prev, [date]: remote }));
+          await saveCachedCalorieDay(remote);
+          return remote;
+        }
+      } catch {
+        /* fall through to cache */
+      }
+    }
     if (calories[date]) return calories[date];
     const cached = await loadCachedCalorieDay(date);
     if (cached) {
       setCalories((prev) => ({ ...prev, [date]: cached }));
       return cached;
     }
-    if (!token || !manifest) return null;
-    const remote = await loadCalorieFile(token, manifest, date);
-    if (remote) {
-      setCalories((prev) => ({ ...prev, [date]: remote }));
-      await saveCachedCalorieDay(remote);
-    }
-    return remote;
+    return null;
   };
 
   const onNew = () => {
@@ -647,33 +737,6 @@ export function DiaryApp() {
     await saveCachedManifest(saved);
   };
 
-  const buildAnalyzeSnapshot = async (): Promise<DiarySnapshot> => {
-    const [allDays, allCals, allMonths, cols, skills, qa, man] = await Promise.all([
-      loadAllCachedDays(),
-      loadAllCachedCalories(),
-      loadAllCachedMonthSummaries(),
-      loadCachedCollections(),
-      loadCachedCustomSkills(),
-      loadCachedPeriodQa(),
-      loadCachedManifest(),
-    ]);
-    return {
-      days: allDays,
-      calories: allCals,
-      monthSummaries: allMonths,
-      collections: cols,
-      customSkills: skills,
-      periodQa: qa,
-      manifest: man
-        ? {
-            calorieGoal: man.calorieGoal,
-            dayCount: man.days?.length ?? 0,
-            calorieDayCount: man.calorieDays?.length ?? 0,
-          }
-        : undefined,
-    };
-  };
-
   const onLogArtifacts = async (files: ArtifactFile[]) => {
     if (!token || !manifest) throw new Error("Connect Google Drive to log artifacts.");
     let nextManifest = manifest;
@@ -718,6 +781,52 @@ export function DiaryApp() {
     const blob = await buildDiaryExportZip();
     const stamp = new Date().toISOString().slice(0, 10);
     downloadBlob(blob, `diary-export-${stamp}.zip`);
+  };
+
+  const onManualSync = async (): Promise<string> => {
+    if (!token || !manifest) {
+      throw new Error("Connect Google Drive first.");
+    }
+    setSyncing(true);
+    setError(null);
+    try {
+      const out = await runManualSync({ token, manifest });
+      setManifest(out.manifest);
+      await saveCachedManifest(out.manifest);
+      setCollections(out.collections);
+      const dates = sortedArchiveDates(out.manifest);
+      setArchiveDates(dates);
+      const keep = Math.max(loadedDateCount, INITIAL_DATE_BATCH);
+      const batch = dates.slice(0, keep);
+      setLoadedDateCount(batch.length);
+      setDays((prev) => {
+        const next: Record<string, DayFile> = {};
+        for (const date of batch) {
+          next[date] = out.days[date] ?? prev[date];
+        }
+        // Keep any open/current dates not in the batch window.
+        for (const date of Object.keys(prev)) {
+          if (!next[date] && out.days[date]) next[date] = out.days[date];
+          else if (!next[date]) next[date] = prev[date];
+        }
+        return next;
+      });
+      setCalories((prev) => {
+        const next: Record<string, CalorieDay> = {};
+        for (const date of batch) {
+          next[date] = out.calories[date] ?? prev[date];
+        }
+        for (const date of Object.keys(prev)) {
+          if (!next[date] && out.calories[date]) next[date] = out.calories[date];
+          else if (!next[date]) next[date] = prev[date];
+        }
+        return next;
+      });
+      setDrivePending(await hasPendingSync());
+      return out.result.summary;
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const onCalorieGoalChange = async (goal: number) => {
@@ -1081,6 +1190,7 @@ export function DiaryApp() {
           mode: "chat",
           messages: working.messages.map((m) => ({ role: m.role, text: m.text })),
           packedDays,
+          packedTrack: packTrackCatalog(collections),
           images,
         });
         if (!result.ok) {
@@ -1178,6 +1288,12 @@ export function DiaryApp() {
   const isPhone = narrow || phonePreview;
   const bezel = phonePreview && !narrow;
 
+  useEffect(() => {
+    if (!isPhone || bezel) return;
+    document.documentElement.classList.add("diary-lock-scroll");
+    return () => document.documentElement.classList.remove("diary-lock-scroll");
+  }, [isPhone, bezel]);
+
   const sessionList = (
     <SessionList
       entries={sessions}
@@ -1189,6 +1305,9 @@ export function DiaryApp() {
       onNew={onNew}
       onSelect={onSelect}
       onDelete={onDelete}
+      hasMore={canLoadMoreSessions}
+      loadingMore={loadingMoreSessions}
+      onLoadMore={() => void pullMoreArchiveDates()}
     />
   );
 
@@ -1218,33 +1337,12 @@ export function DiaryApp() {
       onAddFiles={onAddFiles}
       onSend={onSend}
       onLog={onLog}
+      onNew={onNew}
     />
   );
 
   const main =
-    tab === "chat" ? (
-      <>
-        {isPhone ? null : sessionList}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className="flex items-center justify-between gap-3 border-b border-ink/15 px-4 py-2 text-xs text-ink-mute">
-            {isPhone ? (
-              <button type="button" className="text-accent" onClick={() => setSessionsOpen(true)}>
-                Sessions
-              </button>
-            ) : (
-              <span />
-            )}
-            <div className="flex items-center gap-3">
-              {syncing ? <span>Syncing…</span> : <span>Drive</span>}
-              <button type="button" className="underline-offset-2 hover:underline" onClick={disconnect}>
-                Disconnect
-              </button>
-            </div>
-          </div>
-          {chatPane}
-        </div>
-      </>
-    ) : tab === "log" ? (
+    tab === "log" ? (
       <CalendarLog
         markedDates={markedDates}
         days={days}
@@ -1272,21 +1370,27 @@ export function DiaryApp() {
         onNeedMonthSummary={onNeedMonthSummary}
       />
     ) : (
-      <AnalyzeView
-        collections={collections}
-        buildSnapshot={buildAnalyzeSnapshot}
-        onNeedRange={async (start, end) => {
-          const loaded: Record<string, CalorieDay> = { ...calories };
-          for (const date of datesInRange(start, end)) {
-            const cal = await loadCalIntoState(date);
-            if (cal) loaded[date] = cal;
-          }
-          return loaded;
-        }}
-        onLogArtifacts={onLogArtifacts}
-        loggedArtifacts={artifactsIndex}
-        onOpenLoggedArtifact={onOpenArtifact}
-      />
+      <>
+        {isPhone ? null : sessionList}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="flex items-center justify-between gap-3 border-b border-ink/15 px-4 py-2 text-xs text-ink-mute">
+            {isPhone ? (
+              <button type="button" className="text-accent" onClick={() => setSessionsOpen(true)}>
+                Sessions
+              </button>
+            ) : (
+              <span />
+            )}
+            <div className="flex items-center gap-3">
+              {syncing ? <span>Syncing…</span> : <span>Drive</span>}
+              <button type="button" className="underline-offset-2 hover:underline" onClick={disconnect}>
+                Disconnect
+              </button>
+            </div>
+          </div>
+          {chatPane}
+        </div>
+      </>
     );
 
   if (hydrating) {
@@ -1328,7 +1432,9 @@ export function DiaryApp() {
       className={
         bezel
           ? "flex min-h-screen flex-col items-center justify-center gap-3 bg-paper-2 p-6"
-          : "relative min-h-screen"
+          : isPhone
+            ? "relative h-[100dvh] overflow-hidden overscroll-none"
+            : "relative min-h-screen"
       }
     >
       {narrow ? null : (
@@ -1402,6 +1508,7 @@ export function DiaryApp() {
             <SettingsPanel
               onClose={() => setSettingsOpen(false)}
               onDownloadData={onDownloadData}
+              onManualSync={onManualSync}
               nutritionRows={nutritionTrackables(
                 calories,
                 manifest?.calorieGoal ?? DEFAULT_CALORIE_GOAL,

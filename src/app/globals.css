@@ -31,10 +31,20 @@ body {
   background: var(--paper);
   color: var(--ink);
   min-height: 100%;
+  overscroll-behavior: none;
 }
 
 body {
   font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Phone shell uses 100dvh; keep the document from rubber-banding under the tab bar. */
+html.diary-lock-scroll,
+html.diary-lock-scroll body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: manipulation;
 }
 
 button {

@@ -1,5 +1,6 @@
 import type { DiaryEntry } from "../lib/types";
 import { formatStamp } from "../lib/dates";
+import { useRef } from "react";
 
 type Props = {
   entries: { date: string; entry: DiaryEntry }[];
@@ -11,6 +12,9 @@ type Props = {
   onDelete: (date: string, entryId: string) => void;
   sheet?: boolean;
   onClose?: () => void;
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 };
 
 export function SessionList({
@@ -23,32 +27,45 @@ export function SessionList({
   onDelete,
   sheet,
   onClose,
+  hasMore,
+  loadingMore,
+  onLoadMore,
 }: Props) {
+  const listRef = useRef<HTMLUListElement>(null);
+
   return (
     <aside
       className={`flex flex-col bg-paper-2 ${
         sheet ? "h-full w-full" : "w-full border-ink/15 md:h-full md:w-72 md:border-r"
       }`}
     >
-      <div className="flex items-center justify-between border-b border-ink/15 px-4 py-3">
-        <p className="text-xs tracking-[0.14em] uppercase text-ink-mute">Sessions</p>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={onNew}
-            disabled={busy}
-            className="text-sm text-accent underline-offset-4 hover:underline disabled:opacity-40"
-          >
-            New
-          </button>
+      <div className="border-b border-ink/15 px-4 py-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs tracking-[0.14em] uppercase text-ink-mute">Sessions</p>
           {sheet && onClose ? (
             <button type="button" className="text-sm text-ink-mute" onClick={onClose}>
               Close
             </button>
           ) : null}
         </div>
+        <button
+          type="button"
+          onClick={onNew}
+          disabled={busy}
+          className="mt-3 w-full border border-ink bg-ink px-3 py-2.5 text-sm text-paper disabled:opacity-40"
+        >
+          New session
+        </button>
       </div>
-      <ul className="min-h-0 flex-1 overflow-y-auto">
+      <ul
+        ref={listRef}
+        className="min-h-0 flex-1 overflow-y-auto"
+        onScroll={() => {
+          if (!hasMore || loadingMore || !onLoadMore || !listRef.current) return;
+          const el = listRef.current;
+          if (el.scrollTop + el.clientHeight >= el.scrollHeight - 80) onLoadMore();
+        }}
+      >
         {entries.length === 0 ? (
           <li className="px-4 py-6 text-sm text-ink-mute">No sessions yet.</li>
         ) : (
@@ -85,6 +102,16 @@ export function SessionList({
             );
           })
         )}
+        {loadingMore ? (
+          <li className="px-4 py-3 text-center text-xs text-ink-mute">Loading…</li>
+        ) : null}
+        {hasMore && !loadingMore ? (
+          <li className="px-4 py-3 text-center">
+            <button type="button" className="text-xs text-accent" onClick={onLoadMore}>
+              Load older
+            </button>
+          </li>
+        ) : null}
       </ul>
     </aside>
   );

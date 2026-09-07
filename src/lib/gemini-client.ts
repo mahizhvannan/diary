@@ -6,6 +6,7 @@ export type GeminiRequest =
       mode: "chat";
       messages: { role: string; text: string }[];
       packedDays: string;
+      packedTrack?: string;
       images?: { mimeType: string; data: string }[];
     }
   | {

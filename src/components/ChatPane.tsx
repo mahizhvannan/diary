@@ -17,6 +17,7 @@ type Props = {
   onAddFiles: (files: FileList | File[]) => void;
   onSend: () => void;
   onLog: () => void;
+  onNew?: () => void;
 };
 
 export function ChatPane({
@@ -33,6 +34,7 @@ export function ChatPane({
   onAddFiles,
   onSend,
   onLog,
+  onNew,
 }: Props) {
   const area = useRef<HTMLTextAreaElement>(null);
   const box = useRef<HTMLFormElement>(null);
@@ -76,9 +78,21 @@ export function ChatPane({
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header className={`border-b border-ink/15 ${compact ? "px-4 py-3" : "px-5 py-4"}`}>
-        <h1 className={`font-serif text-ink ${compact ? "text-xl" : "text-2xl"}`}>
-          {entry.title || "New session"}
-        </h1>
+        <div className="flex items-start justify-between gap-3">
+          <h1 className={`min-w-0 font-serif text-ink ${compact ? "text-xl" : "text-2xl"}`}>
+            {entry.title || "New session"}
+          </h1>
+          {onNew ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onNew}
+              className="shrink-0 border border-ink px-3 py-1.5 text-sm text-ink disabled:opacity-40"
+            >
+              New
+            </button>
+          ) : null}
+        </div>
         {compact ? null : (
           <p className="mt-1 text-sm text-ink-mute">
             Chat as usual. Type @ for skills. Log files the conversation on Drive.
@@ -201,9 +215,11 @@ export function ChatPane({
               setCursor(e.target.selectionStart);
             }}
             onSelect={(e) => setCursor(e.currentTarget.selectionStart)}
-            rows={compact ? 2 : 3}
+            rows={compact ? 4 : 5}
             placeholder="Chat, photo, @calories, @track, @weekly, or @monthly"
-            className="w-full resize-y border border-ink/20 bg-paper px-3 py-2 font-serif text-base leading-6 text-ink outline-none focus:border-accent"
+            className={`w-full resize-y border border-ink/20 bg-paper px-3 py-2.5 font-serif text-base leading-6 text-ink outline-none focus:border-accent ${
+              compact ? "min-h-[6.5rem]" : "min-h-[8rem]"
+            }`}
             onKeyDown={(e) => {
               if (e.key === "Escape") {
                 setMenuOpen(false);
